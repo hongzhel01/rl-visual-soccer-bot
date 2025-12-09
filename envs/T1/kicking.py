@@ -239,6 +239,274 @@ class Kicking(BaseTask):
         self.ball_lin_vel = torch.zeros(self.num_envs, 3, dtype=torch.float, device=self.device)
         self.ball_ang_vel = torch.zeros(self.num_envs, 3, dtype=torch.float, device=self.device)
 
+
+
+        # 存储 handles
+        self.envs.append(env_handle)
+        self.actor_handles.append(actor_handle)
+        self.ball_handles.append(ball_handle)
+
+        # 3. ⭐ 草皮（添加在这里）
+        terrain = self.terrain
+        if terrain.grass_asset is not None:
+            grass_pose = gymapi.Transform()
+            grass_pose.p = gymapi.Vec3(self.env_origins[i][0],
+                                    self.env_origins[i][1],
+                                    terrain.grass_z)
+            grass_actor = self.gym.create_actor(
+                env_handle,
+                terrain.grass_asset,
+                grass_pose,
+                f"grass_{i}",
+                i,
+                0
+            )
+            self.gym.set_rigid_body_color(
+                env_handle, grass_actor, 0,
+                gymapi.MESH_VISUAL,
+                terrain.grass_color
+            )
+
+        # ===== 在这里添加摄像头系统 =====
+        # 改进的摄像头配置
+        self.camera_handles = []
+        self.global_camera_handles = []
+
+        # 摄像头属性配置
+        self.camera_props = gymapi.CameraProperties()
+        self.camera_props.width = 640
+        self.camera_props.height = 480
+        self.camera_props.enable_tensors = True
+        self.camera_props.horizontal_fov = 75.0  # 增加视野
+
+        # 全局摄像头属性
+        self.global_camera_props = gymapi.CameraProperties()
+        self.global_camera_props.width = 640
+        self.global_camera_props.height = 480
+        self.global_camera_props.enable_tensors = True
+
+        # 为每个环境创建摄像头
+        for i in range(self.num_envs):
+            env_handle = self.envs[i]
+            env_origin = self.env_origins[i]
+            
+            # 机器人摄像头
+            agent_camera_handles = []
+            
+            # 假设只有一个机器人，如果需要多个机器人可以循环
+            camera_handle = self.gym.create_camera_sensor(env_handle, self.camera_props)
+            
+            # 获取机器人身体句柄（通常是基座）
+            robot_handle = self.actor_handles[i]
+            body_handle = self.gym.get_actor_rigid_body_handle(env_handle, robot_handle, 0)
+            
+            # 设置摄像头相对于机器人的位置和旋转
+            local_transform = gymapi.Transform()
+            # 位置：向前20cm，向上22cm（在机器人前方稍高的位置）
+            local_transform.p = gymapi.Vec3(0.4, 0, 0.22)
+            # 旋转：向下倾斜60度（1.047弧度），朝向地面
+            local_transform.r = gymapi.Quat.from_euler_zyx(0, 0.8, 0)  # -1.047 rad ≈ -60°
+            
+            # 将摄像头附加到机器人身体
+            self.gym.attach_camera_to_body(
+                camera_handle, env_handle, body_handle, 
+                local_transform, gymapi.FOLLOW_POSITION
+            )
+            
+            agent_camera_handles.append(camera_handle)
+            self.camera_handles.append(agent_camera_handles)
+            
+            # 全局摄像头 - 改进的位置
+            global_camera_handle = self.gym.create_camera_sensor(env_handle, self.global_camera_props)
+            
+            # 根据环境位置设置全局摄像头
+            camera_height = 3.0  # 更高的视角
+            camera_distance = 4.0  # 更远的距离
+            
+            cam_pos = gymapi.Vec3(
+                env_origin[0] + camera_distance,
+                env_origin[1],
+                env_origin[2] + camera_height
+            )
+            target_pos = gymapi.Vec3(
+                env_origin[0],
+                env_origin[1], 
+                env_origin[2]
+            )
+            
+            self.gym.set_camera_location(global_camera_handle, env_handle, cam_pos, target_pos)
+            self.global_camera_handles.append(global_camera_handle)
+
+        # 初始化图像缓冲区
+        self._init_camera_buffers()
+
+    def _init_camera_buffers(self):
+        """初始化摄像头图像缓冲区"""
+        
+        print(f"📷 初始化摄像头系统")
+        print(f"  - 机器人摄像头: 640x480")
+        print(f"  - 全局摄像头: 640x480")
+        
+        # 机器人摄像头缓冲区
+        self.camera_images = torch.zeros(
+            self.num_envs, 1,  # 每个环境一个机器人摄像头
+            480, 640, 3,  # 高度, 宽度, 通道
+            dtype=torch.uint8, device=self.device
+        )
+        
+        # 全局摄像头缓冲区
+        self.global_camera_images = torch.zeros(
+            self.num_envs,
+            480, 640, 3,
+            dtype=torch.uint8, device=self.device
+        )
+        
+        # 存储摄像头尺寸
+        self.camera_width = 640
+        self.camera_height = 480
+        
+        # 创建保存目录
+        self.camera_save_dir = "robot_camera_images"
+        self.global_camera_save_dir = "global_camera_images"
+        
+        for dir_path in [self.camera_save_dir, self.global_camera_save_dir]:
+            if not os.path.exists(dir_path):
+                os.makedirs(dir_path)
+        
+        print(f"✅ 摄像头系统初始化完成")
+
+
+    def _process_camera_images(self):
+        """处理摄像头图像"""
+        try:
+            # 渲染所有摄像头
+            self.gym.render_all_camera_sensors(self.sim)
+            
+            # 处理机器人摄像头
+            for env_id in range(self.num_envs):
+                # 机器人摄像头
+                camera_handle = self.camera_handles[env_id][0]
+                
+                try:
+                    # 获取摄像头图像
+                    camera_image = self.gym.get_camera_image(
+                        self.sim, self.envs[env_id], camera_handle, gymapi.IMAGE_COLOR
+                    )
+                    
+                    if camera_image is not None and camera_image.size > 0:
+                        # 处理图像格式
+                        processed_image = self._process_image_format(camera_image)
+                        
+                        if processed_image is not None:
+                            # 转换为张量
+                            image_tensor = torch.tensor(processed_image, device=self.device)
+                            
+                            # 调整尺寸并存储
+                            if image_tensor.dim() == 3:  # H x W x C
+                                h, w, c = image_tensor.shape
+                                
+                                # 如果尺寸不匹配，调整图像尺寸
+                                if h != self.camera_height or w != self.camera_width:
+                                    resized_image = self._resize_image_tensor(image_tensor, self.camera_height, self.camera_width)
+                                    self.camera_images[env_id, 0] = resized_image
+                                else:
+                                    self.camera_images[env_id, 0] = image_tensor
+                        
+                except Exception as e:
+                    print(f"❌ 处理机器人摄像头失败 - 环境{env_id}: {e}")
+            
+            # 处理全局摄像头
+            for env_id in range(self.num_envs):
+                camera_handle = self.global_camera_handles[env_id]
+                
+                try:
+                    global_image = self.gym.get_camera_image(
+                        self.sim, self.envs[env_id], camera_handle, gymapi.IMAGE_COLOR
+                    )
+                    
+                    if global_image is not None and global_image.size > 0:
+                        processed_image = self._process_image_format(global_image)
+                        
+                        if processed_image is not None:
+                            image_tensor = torch.tensor(processed_image, device=self.device)
+                            
+                            if image_tensor.dim() == 3:
+                                h, w, c = image_tensor.shape
+                                
+                                if h != self.camera_height or w != self.camera_width:
+                                    resized_image = self._resize_image_tensor(image_tensor, self.camera_height, self.camera_width)
+                                    self.global_camera_images[env_id] = resized_image
+                                else:
+                                    self.global_camera_images[env_id] = image_tensor
+                        
+                except Exception as e:
+                    print(f"❌ 处理全局摄像头失败 - 环境{env_id}: {e}")
+                    
+        except Exception as e:
+            print(f"❌ 摄像头处理错误: {e}")
+
+
+    def _process_image_format(self, raw_image):
+        """处理图像格式转换"""
+        try:
+            if raw_image is None:
+                return None
+                
+            # 处理不同的图像格式
+            if len(raw_image.shape) == 2:
+                # 灰度图像 - 转换为RGB
+                h, w = raw_image.shape
+                rgb_image = np.stack([raw_image] * 3, axis=-1)
+                return rgb_image
+                
+            elif len(raw_image.shape) == 3:
+                h, w, c = raw_image.shape
+                
+                if c == 4:  # RGBA格式
+                    # 移除alpha通道，BGR转RGB
+                    import cv2
+                    bgr_image = raw_image[:, :, :3]
+                    rgb_image = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2RGB)
+                    return rgb_image
+                    
+                elif c == 3:  # RGB或BGR格式
+                    # 假设是BGR，转换为RGB
+                    import cv2
+                    rgb_image = cv2.cvtColor(raw_image, cv2.COLOR_BGR2RGB)
+                    return rgb_image
+                else:
+                    print(f"⚠️ 未知的通道数: {c}")
+                    return raw_image[:, :, :3]  # 取前3个通道
+            else:
+                print(f"⚠️ 未知的图像维度: {len(raw_image.shape)}")
+                return None
+                
+        except Exception as e:
+            print(f"❌ 图像格式处理错误: {e}")
+            return None
+
+    def _resize_image_tensor(self, image_tensor, target_height, target_width):
+        """调整图像张量尺寸"""
+        try:
+            # 将张量转换为numpy数组进行处理
+            if image_tensor.is_cuda:
+                image_np = image_tensor.cpu().numpy()
+            else:
+                image_np = image_tensor.numpy()
+            
+            # 使用OpenCV调整尺寸
+            import cv2
+            resized_np = cv2.resize(image_np, (target_width, target_height), interpolation=cv2.INTER_LINEAR)
+            
+            # 转换回张量
+            resized_tensor = torch.tensor(resized_np, device=self.device)
+            return resized_tensor
+            
+        except Exception as e:
+            print(f"❌ 调整图像尺寸失败: {e}")
+            return image_tensor
+
+
     def _create_goal_assets(self):
         """创建球门资产（使用长方体）"""
         goal_cfg = self.cfg["goal"]
@@ -892,6 +1160,13 @@ class Kicking(BaseTask):
         self.torques /= self.cfg["control"]["decimation"]
         self.render()
 
+        # ===== 在这里添加摄像头处理 =====
+        self._process_camera_images()
+        
+        save_interval = self.cfg.get("camera", {}).get("save_interval", 10)  # 默认每10帧保存一次
+        if self.common_step_counter % save_interval == 0:
+            self._save_camera_images()
+
         # Store previous ball velocity in world frame *before* refreshing root states for current step
         prev_ball_lin_vel_world = self.root_states[:, 1, 7:10].clone()
 
@@ -988,6 +1263,65 @@ class Kicking(BaseTask):
         #     print(f"ball_velocities average: {np.mean(self.ball_velocities)}, std: {np.std(self.ball_velocities)}, max: {np.max(self.ball_velocities)}")
 
         return self.obs_buf, self.rew_buf, self.reset_buf, self.extras
+
+
+    def _save_camera_images(self):
+        """保存摄像头图片"""
+        try:
+            import cv2
+            from datetime import datetime
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            # 获取保存间隔配置
+            save_interval = self.cfg.get("camera", {}).get("save_interval", 10)
+            
+            # 保存所有环境的图片
+            for env_id in range(self.num_envs):
+                # 保存机器人摄像头图片
+                if self.camera_images is not None and env_id < len(self.camera_handles):
+                    robot_image = self.camera_images[env_id, 0].cpu().numpy()
+                    
+                    if robot_image is not None and len(robot_image.shape) == 3:
+                        # RGB转BGR用于OpenCV保存
+                        bgr_image = cv2.cvtColor(robot_image, cv2.COLOR_RGB2BGR)
+                        filename = f"{self.camera_save_dir}/robot_env{env_id}_{timestamp}_step{self.common_step_counter}.png"
+                        
+                        # 添加文本信息
+                        height, width = bgr_image.shape[:2]
+                        cv2.putText(bgr_image, f"Env{env_id}", (10, 30), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                        cv2.putText(bgr_image, f"Step{self.common_step_counter}", (10, 70), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                        cv2.putText(bgr_image, f"Interval{save_interval}", (10, 110), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                        
+                        cv2.imwrite(filename, bgr_image)
+                
+                # 保存全局摄像头图片
+                if self.global_camera_images is not None:
+                    global_image = self.global_camera_images[env_id].cpu().numpy()
+                    if global_image is not None and len(global_image.shape) == 3:
+                        bgr_image = cv2.cvtColor(global_image, cv2.COLOR_RGB2BGR)
+                        filename = f"{self.global_camera_save_dir}/global_env{env_id}_{timestamp}_step{self.common_step_counter}.png"
+                        
+                        # 添加文本信息
+                        height, width = bgr_image.shape[:2]
+                        cv2.putText(bgr_image, f"Env{env_id}", (10, 30), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                        cv2.putText(bgr_image, f"Step{self.common_step_counter}", (10, 70), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                        cv2.putText(bgr_image, f"Interval{save_interval}", (10, 110), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                        
+                        cv2.imwrite(filename, bgr_image)
+            
+            # 打印保存信息（避免打印太多信息）
+            if self.common_step_counter % (save_interval * 10) == 0:  # 每保存10次打印一次
+                print(f"📸 保存摄像头图片 - 步骤 {self.common_step_counter}, 间隔 {save_interval} 帧")
+                        
+        except Exception as e:
+            print(f"❌ 保存摄像头图片失败: {e}")
 
     def _kick_robots(self):
         """Random kick the robots. Emulates an impulse by setting a randomized base velocity."""
