@@ -1,7 +1,7 @@
 basic:
   checkpoint: null # set to -1 to load last saved model
   headless: false
-  max_iterations: 10000 # set the maximum number of learning iterations to train for
+  max_iterations: 100 # set the maximum number of learning iterations to train for
   sim_device: "cpu" # device for physics simulation
   rl_device: "cpu" # device for the RL algorithm
   seed: -1 # seed - set to -1 to choose random seed
@@ -10,8 +10,8 @@ basic:
 
 env:
   num_envs: 1
-  num_observations: 44
-  num_privileged_obs: 20
+  num_observations: 50
+  num_privileged_obs: 26
   num_actions: 12
   env_spacing: 5.  # not used with plane terrain
 
@@ -381,3 +381,32 @@ goal:
     static_friction: 0.5
     dynamic_friction: 0.3
     restitution: 0.1
+
+
+camera:
+  save_interval: 10
+  enable_visualization: true
+  robot:
+    width: 640
+    height: 480
+    fov: 75.0
+    position: [0.2, 0.0, 0.22]  # 相对于机器人的位置 [x, y, z]
+    rotation: [0.0, 0.6, 0.0]   # 欧拉角 [pitch, yaw, roll]
+  
+  global:
+    width: 640
+    height: 480
+    position: [4.0, 0.0, 3.0]   # 世界坐标位置
+    target: [0.0, 0.0, 0.0]     # 观察目标位置
+
+visual:
+  # 视觉特征提取器配置
+  use_simple_extractor: true  # 使用简单提取器（true）或CNN提取器（false）
+  feature_dim: 32  # CNN提取器的特征维度
+  
+  # 观测配置
+  include_in_privileged: true  # 是否在特权观测中包含视觉特征
+  visual_scale: 0.1  # 视觉特征的归一化尺度
+  
+  # 噪声配置
+  visual_noise: 0.01  # 添加到视觉特征的噪声尺度

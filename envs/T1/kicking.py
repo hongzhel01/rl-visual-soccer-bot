@@ -21,11 +21,16 @@ from envs.base_task import BaseTask
 
 from utils.utils import apply_randomization
 
+from .visual_feature_extractor import VisualFeatureExtractor, SimpleVisualFeatureExtractor
 
 class Kicking(BaseTask):
 
     def __init__(self, cfg):
         super().__init__(cfg)
+
+        # 初始化视觉特征提取器
+        self._init_visual_extractor()
+
         self._create_envs()
         self.gym.prepare_sim(self.sim)
         self._init_buffers()
@@ -35,6 +40,28 @@ class Kicking(BaseTask):
         self.env_successes = 0
         self.env_falling = 0
         self.ball_velocities = []
+
+    
+    def _init_visual_extractor(self):
+        """初始化视觉特征提取器"""
+        visual_cfg = self.cfg.get("visual", {})
+        use_simple = visual_cfg.get("use_simple_extractor", True)
+        
+        if use_simple:
+            self.visual_extractor = SimpleVisualFeatureExtractor()
+            self.visual_feature_dim = 6  # SimpleVisualFeatureExtractor的特征维度
+        else:
+            self.visual_extractor = VisualFeatureExtractor(
+                feature_dim=visual_cfg.get("feature_dim", 32)
+            )
+            # CNN特征(32) + 球特征(4) + 深度特征(16) = 52
+            self.visual_feature_dim = 52
+        
+        print(f"📷 视觉特征提取器初始化完成")
+        print(f"  - 使用 {'简单' if use_simple else 'CNN'} 提取器")
+        print(f"  - 特征维度: {self.visual_feature_dim}")
+    
+
 
     def _create_envs(self):
         self.num_envs = self.cfg["env"]["num_envs"]
@@ -642,9 +669,14 @@ class Kicking(BaseTask):
         self.num_privileged_obs = self.cfg["env"]["num_privileged_obs"]
         self.num_actions = self.cfg["env"]["num_actions"]
         self.dt = self.cfg["control"]["decimation"] * self.cfg["sim"]["dt"]
-
+        print(f"📊 观测维度: {self.num_obs} (包含{self.visual_feature_dim}维视觉特征)")
         self.obs_buf = torch.zeros(self.num_envs, self.num_obs, dtype=torch.float, device=self.device)
         self.privileged_obs_buf = torch.zeros(self.num_envs, self.num_privileged_obs, dtype=torch.float, device=self.device)
+
+        # 存储视觉特征的缓冲区
+        self.visual_features_buf = torch.zeros(self.num_envs, self.visual_feature_dim, 
+                                              dtype=torch.float, device=self.device)
+
         self.rew_buf = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
         self.reset_buf = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
         self.reset_ball_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device) # Buffer for ball-only resets
@@ -655,6 +687,7 @@ class Kicking(BaseTask):
         self.time_out_buf = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
         self.extras = {}
         self.extras["rew_terms"] = {}
+        self.extras["ball_detected"] = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
 
         # get gym state tensors
         actor_root_state = self.gym.acquire_actor_root_state_tensor(self.sim)
@@ -1162,7 +1195,12 @@ class Kicking(BaseTask):
 
         # ===== 在这里添加摄像头处理 =====
         self._process_camera_images()
-        
+
+
+        # 提取视觉特征
+        if self.camera_images is not None:
+            self._extract_visual_features()
+
         save_interval = self.cfg.get("camera", {}).get("save_interval", 10)  # 默认每10帧保存一次
         if self.common_step_counter % save_interval == 0:
             self._save_camera_images()
@@ -1265,6 +1303,48 @@ class Kicking(BaseTask):
         return self.obs_buf, self.rew_buf, self.reset_buf, self.extras
 
 
+
+    def _extract_visual_features(self):
+        """从摄像头图像中提取视觉特征"""
+        try:
+            for env_id in range(self.num_envs):
+                # 获取环境0的机器人摄像头图像
+                if env_id < len(self.camera_handles) and self.camera_images is not None:
+                    robot_image = self.camera_images[env_id, 0]
+                    
+                    if robot_image is not None and robot_image.shape[0] > 0:
+                        # 转换为numpy数组进行处理
+                        if isinstance(self.visual_extractor, SimpleVisualFeatureExtractor):
+                            # 使用简单提取器
+                            image_np = robot_image.cpu().numpy()
+                            features = self.visual_extractor.extract_features(image_np)
+                        else:
+                            # 使用CNN提取器
+                            features = self.visual_extractor.extract_all_features(robot_image)
+                        
+                        # 确保 features 是张量
+                        if not isinstance(features, torch.Tensor):
+                            features = torch.tensor(features, device=self.device)
+                        
+                        # 存储特征
+                        if features.shape[0] == self.visual_feature_dim:
+                            self.visual_features_buf[env_id] = features
+                            
+                            # 记录球是否被检测到（第一个特征通常是球可见性）
+                            if features.shape[0] > 0:
+                                # 检查 ball_detected 是否存在，不存在则创建
+                                if "ball_detected" not in self.extras:
+                                    self.extras["ball_detected"] = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+                                
+                                # 获取球的可见性特征（假设第一个特征表示球的可见性）
+                                ball_visibility = features[0] if features.dim() == 1 else features[0, 0]
+                                self.extras["ball_detected"][env_id] = ball_visibility
+                        
+        except Exception as e:
+            print(f"❌ 提取视觉特征失败: {e}")
+            import traceback
+            traceback.print_exc()
+        
     def _save_camera_images(self):
         """保存摄像头图片"""
         try:
@@ -1457,7 +1537,80 @@ class Kicking(BaseTask):
         if self.cfg["rewards"]["only_positive_rewards"]:
             self.rew_buf[:] = torch.clip(self.rew_buf[:], min=0.0)
 
+
     def _compute_observations(self):
+        """计算观测值（包含视觉特征）"""
+        
+        # 1. 计算基础观测
+        ball_pos_world_frame = self.ball_pos - self.base_pos
+        relative_ball_pos = quat_rotate_inverse(self.base_quat, ball_pos_world_frame)
+        
+        # 基础观测向量
+        base_obs_parts = [
+            apply_randomization(self.projected_gravity, self.cfg["noise"].get("gravity")) * self.cfg["normalization"]["gravity"],
+            apply_randomization(self.base_ang_vel, self.cfg["noise"].get("ang_vel")) * self.cfg["normalization"]["ang_vel"],
+            apply_randomization(relative_ball_pos[:, 0:2], self.cfg["noise"].get("ball_pos")) * self.cfg["normalization"]["ball_pos"],  
+            apply_randomization(self.dof_pos - self.default_dof_pos, self.cfg["noise"].get("dof_pos")) * self.cfg["normalization"]["dof_pos"],
+            apply_randomization(self.dof_vel, self.cfg["noise"].get("dof_vel")) * self.cfg["normalization"]["dof_vel"],
+            self.actions,
+        ]
+        
+        base_obs = torch.cat(base_obs_parts, dim=-1)
+        
+        # 2. 获取视觉特征
+        visual_obs = self.visual_features_buf.clone()
+        
+        # 3. 对视觉特征进行处理
+        try:
+            # 尝试添加噪声
+            visual_noise_params = self.cfg.get("noise", {}).get("visual_noise_params")
+            if visual_noise_params is not None:
+                visual_obs = apply_randomization(visual_obs, visual_noise_params)
+            else:
+                # 如果没有配置参数，使用简化的噪声
+                visual_noise_scale = self.cfg.get("noise", {}).get("visual_noise", 0.0)
+                if visual_noise_scale > 0:
+                    # 简单的手动添加噪声
+                    noise = torch.randn_like(visual_obs) * visual_noise_scale
+                    visual_obs = visual_obs + noise
+        except Exception as e:
+            print(f"⚠️ 视觉特征随机化失败: {e}")
+            # 继续执行，不添加噪声
+        
+        # 4. 归一化视觉特征
+        visual_scale = self.cfg.get("normalization", {}).get("visual_scale", 1.0)
+        visual_obs = visual_obs * visual_scale
+        
+        # 5. 拼接基础观测和视觉观测
+        self.obs_buf = torch.cat([base_obs, visual_obs], dim=-1)
+        
+        # 6. 计算特权观测
+        if hasattr(self, 'privileged_obs_buf'):
+            # 基础特权观测
+            privileged_base_parts = [
+                self.base_mass_scaled,
+                apply_randomization(self.base_lin_vel, self.cfg["noise"].get("lin_vel")) * self.cfg["normalization"]["lin_vel"],
+                apply_randomization(self.base_pos[:, 2] - self.terrain.terrain_heights(self.base_pos), self.cfg["noise"].get("height")).unsqueeze(-1),
+                self.ball_lin_vel[:, 0:2],
+                self.feet_pos[:, 0, 0:2],
+                self.feet_pos[:, 1, 0:2],
+                self.pushing_forces[:, 0, :] * self.cfg["normalization"]["push_force"],
+                self.pushing_torques[:, 0, :] * self.cfg["normalization"]["push_torque"],
+            ]
+            
+            privileged_base_obs = torch.cat(privileged_base_parts, dim=-1)
+            
+            # 添加视觉特征到特权观测
+            privileged_visual_obs = self.visual_features_buf.clone() * visual_scale
+            self.privileged_obs_buf = torch.cat([privileged_base_obs, privileged_visual_obs], dim=-1)
+            self.extras["privileged_obs"] = self.privileged_obs_buf
+        
+        # 7. 调试输出
+        if self.common_step_counter % 500 == 0:
+            print(f"📊 观测维度: 基础={base_obs.shape[1]}, 视觉={visual_obs.shape[1]}, 总计={self.obs_buf.shape[1]}")
+            print(f"  视觉特征范围: [{visual_obs.min():.3f}, {visual_obs.max():.3f}], 均值={visual_obs.mean():.3f}")
+
+    def _compute_observations_o(self):
         """Computes observations"""
         #commands_scale = torch.tensor(
         #    [self.cfg["normalization"]["lin_vel"], self.cfg["normalization"]["lin_vel"], self.cfg["normalization"]["ang_vel"]],

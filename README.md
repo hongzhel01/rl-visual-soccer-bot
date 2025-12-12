@@ -20,6 +20,7 @@ python play.py --task=T1/Kicking --checkpoint=-1
 ### 2025/12/09
 
 添加了全局摄像头和局部摄像头（更改代码：kicking.py 和 kicking.yaml）
+
 可以通过更改帧数间隔（save_interval）保存图片
 
 #### 全局摄像头
@@ -28,3 +29,8 @@ python play.py --task=T1/Kicking --checkpoint=-1
 #### 局部摄像头
 ![局部视角](./1209_local_pic.png)
 
+### 2025/12/12
+
+添加了visual_feature_extractor.py文件，用简单的CNN提取视觉特征，并融入到机器人的状态中（更改代码：visual_feature_extractor.py、kicking.py 和 kicking.yaml）
+
+具体效果还没去测试，目前可以运行，后期可以替换更好的神经网络架构
