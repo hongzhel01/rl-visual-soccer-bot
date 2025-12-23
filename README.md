@@ -34,3 +34,9 @@ python play.py --task=T1/Kicking --checkpoint=-1
 添加了visual_feature_extractor.py文件，用简单的CNN提取视觉特征，并融入到机器人的状态中（更改代码：visual_feature_extractor.py、kicking.py 和 kicking.yaml）
 
 具体效果还没去测试，目前可以运行，后期可以替换更好的神经网络架构
+
+### 2025/12/23
+
+添加了detect_football模块，可以检测出是否有足球并且输出足球的位置
+
+![识别结果](./1223_detect_ball.jpg)
