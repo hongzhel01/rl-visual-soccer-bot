@@ -39,4 +39,8 @@ python play.py --task=T1/Kicking --checkpoint=-1
 
 添加了detect_football模块，可以检测出是否有足球并且输出足球的位置
 
+``` 
+pip install ultralytics opencv-python pillow
+```
+
 ![识别结果](./1223_detect_ball.jpg)
