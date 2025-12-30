@@ -21,7 +21,9 @@ from envs.base_task import BaseTask
 
 from utils.utils import apply_randomization
 
-from .visual_feature_extractor import VisualFeatureExtractor, SimpleVisualFeatureExtractor
+from .visual_feature_extractor import VisualFeatureExtractor
+import torch.nn.functional as F 
+
 
 class Kicking(BaseTask):
 
@@ -40,27 +42,29 @@ class Kicking(BaseTask):
         self.env_successes = 0
         self.env_falling = 0
         self.ball_velocities = []
+        self.saveImages = False
 
     
     def _init_visual_extractor(self):
-        """初始化视觉特征提取器"""
-        visual_cfg = self.cfg.get("visual", {})
-        use_simple = visual_cfg.get("use_simple_extractor", True)
+        # 确保设备定义正确
+        if not hasattr(self, 'device'):
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        # 每隔多少步处理一次图片 (1 表示每一帧都处理)
+        self.visual_process_interval = 1 
+        # 记录当前步数
+        self.visual_step_counter = 0
+        # print("device:", self.device)
+
+        # 设置总特征维度为 52
+        self.visual_feature_dim = 52
         
-        if use_simple:
-            self.visual_extractor = SimpleVisualFeatureExtractor()
-            self.visual_feature_dim = 6  # SimpleVisualFeatureExtractor的特征维度
-        else:
-            self.visual_extractor = VisualFeatureExtractor(
-                feature_dim=visual_cfg.get("feature_dim", 32)
-            )
-            # CNN特征(32) + 球特征(4) + 深度特征(16) = 52
-            self.visual_feature_dim = 52
+        # 将 feature_dim 设为 52 以匹配 visual_feature_dim
+        self.visual_extractor = VisualFeatureExtractor(
+            feature_dim=self.visual_feature_dim,
+            device=self.device
+        )
         
-        print(f"📷 视觉特征提取器初始化完成")
-        print(f"  - 使用 {'简单' if use_simple else 'CNN'} 提取器")
-        print(f"  - 特征维度: {self.visual_feature_dim}")
-    
+        # print(f"✅ 视觉特征提取器初始化完成 (维度: {self.visual_feature_dim})")
 
 
     def _create_envs(self):
@@ -223,7 +227,7 @@ class Kicking(BaseTask):
 
             # 3. ⭐ 草皮（添加在这里）
             terrain = self.terrain
-            print("terrain:", terrain.grass_asset)
+            # print("terrain:", terrain.grass_asset)
             if terrain.grass_asset is not None:
                 grass_pose = gymapi.Transform()
                 grass_pose.p = gymapi.Vec3(self.env_origins[i][0],
@@ -370,9 +374,9 @@ class Kicking(BaseTask):
     def _init_camera_buffers(self):
         """初始化摄像头图像缓冲区"""
         
-        print(f"📷 初始化摄像头系统")
-        print(f"  - 机器人摄像头: 640x480")
-        print(f"  - 全局摄像头: 640x480")
+        # print(f"📷 初始化摄像头系统")
+        # print(f"  - 机器人摄像头: 640x480")
+        # print(f"  - 全局摄像头: 640x480")
         
         # 机器人摄像头缓冲区
         self.camera_images = torch.zeros(
@@ -400,7 +404,7 @@ class Kicking(BaseTask):
             if not os.path.exists(dir_path):
                 os.makedirs(dir_path)
         
-        print(f"✅ 摄像头系统初始化完成")
+        # print(f"✅ 摄像头系统初始化完成")
 
 
     def _process_camera_images(self):
@@ -669,7 +673,7 @@ class Kicking(BaseTask):
         self.num_privileged_obs = self.cfg["env"]["num_privileged_obs"]
         self.num_actions = self.cfg["env"]["num_actions"]
         self.dt = self.cfg["control"]["decimation"] * self.cfg["sim"]["dt"]
-        print(f"📊 观测维度: {self.num_obs} (包含{self.visual_feature_dim}维视觉特征)")
+        # print(f"📊 观测维度: {self.num_obs} (包含{self.visual_feature_dim}维视觉特征)")
         self.obs_buf = torch.zeros(self.num_envs, self.num_obs, dtype=torch.float, device=self.device)
         self.privileged_obs_buf = torch.zeros(self.num_envs, self.num_privileged_obs, dtype=torch.float, device=self.device)
 
@@ -709,7 +713,7 @@ class Kicking(BaseTask):
         total_actors = root_states.shape[0]  # 应该是 3（机器人+球+草皮）
         actors_per_env = total_actors // self.num_envs  # 应该是 3
         
-        print(f"调试信息: total_actors={total_actors}, num_envs={self.num_envs}, actors_per_env={actors_per_env}")
+        # print(f"调试信息: total_actors={total_actors}, num_envs={self.num_envs}, actors_per_env={actors_per_env}")
         
         # Reshape root states to separate all actors
         self.root_states = root_states.view(self.num_envs, actors_per_env, 13)
@@ -791,9 +795,9 @@ class Kicking(BaseTask):
         total_bodies_all_envs = body_state.shape[0]  # 所有环境的总刚体数
         self.total_bodies_per_env = total_bodies_all_envs // self.num_envs
         
-        print(f"Debug: total_bodies_all_envs = {total_bodies_all_envs}")
-        print(f"Debug: num_envs = {self.num_envs}")
-        print(f"Debug: total_bodies_per_env = {self.total_bodies_per_env}")
+        # print(f"Debug: total_bodies_all_envs = {total_bodies_all_envs}")
+        # print(f"Debug: num_envs = {self.num_envs}")
+        # print(f"Debug: total_bodies_per_env = {self.total_bodies_per_env}")
         
         # 使用正确的刚体数量初始化 pushing_forces 和 pushing_torques
         total_bodies = self.total_bodies_per_env  # 使用实际计算出的值
@@ -1197,12 +1201,20 @@ class Kicking(BaseTask):
         self._process_camera_images()
 
 
-        # 提取视觉特征
-        if self.camera_images is not None:
-            self._extract_visual_features()
+        # 1. 检查是否到了处理图像的步数
+        if self.common_step_counter % self.visual_process_interval == 0:
+            # 仅在需要提取特征时才渲染，节省显存开销
+            self.gym.render_all_camera_sensors(self.sim)
+            self._process_camera_images()
+            
+            if self.camera_images is not None:
+                # 这里的提取过程耗时约 0.0023 秒 
+                self._extract_visual_features()
+        # if self.camera_images is not None:
+        #     self._extract_visual_features()
 
         save_interval = self.cfg.get("camera", {}).get("save_interval", 10)  # 默认每10帧保存一次
-        if self.common_step_counter % save_interval == 0:
+        if self.common_step_counter % save_interval & self.saveImages:
             self._save_camera_images()
 
         # Store previous ball velocity in world frame *before* refreshing root states for current step
@@ -1302,49 +1314,37 @@ class Kicking(BaseTask):
 
         return self.obs_buf, self.rew_buf, self.reset_buf, self.extras
 
-
-
     def _extract_visual_features(self):
-        """从摄像头图像中提取视觉特征"""
         try:
+            # 确保模型本身在 GPU 上并处于评估模式
+            self.visual_extractor.model.eval() 
+            
+            # 预先定义灰度权重并移至 GPU
+            rgb_weights = torch.tensor([0.2989, 0.5870, 0.1140], device=self.device)
+            
             for env_id in range(self.num_envs):
-                # 获取环境0的机器人摄像头图像
-                if env_id < len(self.camera_handles) and self.camera_images is not None:
-                    robot_image = self.camera_images[env_id, 0]
-                    
-                    if robot_image is not None and robot_image.shape[0] > 0:
-                        # 转换为numpy数组进行处理
-                        if isinstance(self.visual_extractor, SimpleVisualFeatureExtractor):
-                            # 使用简单提取器
-                            image_np = robot_image.cpu().numpy()
-                            features = self.visual_extractor.extract_features(image_np)
-                        else:
-                            # 使用CNN提取器
-                            features = self.visual_extractor.extract_all_features(robot_image)
-                        
-                        # 确保 features 是张量
-                        if not isinstance(features, torch.Tensor):
-                            features = torch.tensor(features, device=self.device)
-                        
-                        # 存储特征
-                        if features.shape[0] == self.visual_feature_dim:
-                            self.visual_features_buf[env_id] = features
-                            
-                            # 记录球是否被检测到（第一个特征通常是球可见性）
-                            if features.shape[0] > 0:
-                                # 检查 ball_detected 是否存在，不存在则创建
-                                if "ball_detected" not in self.extras:
-                                    self.extras["ball_detected"] = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
-                                
-                                # 获取球的可见性特征（假设第一个特征表示球的可见性）
-                                ball_visibility = features[0] if features.dim() == 1 else features[0, 0]
-                                self.extras["ball_detected"][env_id] = ball_visibility
-                        
+                # 1. 立即将原始图像移至 GPU
+                # self.camera_images 通常在 CPU 上，先搬运再计算
+                raw_rgb = self.camera_images[env_id, 0].to(self.device).float()
+                
+                # 2. 在 GPU 上进行灰度转换 (H, W, 3) -> (1, 1, H, W)
+                # 这样产生的 gray 张量天然就在 GPU 上
+                gray = (raw_rgb * rgb_weights).sum(dim=-1).unsqueeze(0).unsqueeze(0)
+                
+                # 3. 在 GPU 上进行缩放至 160x120 
+                # 归一化必须在 GPU 张量上进行
+                input_tensor = F.interpolate(gray, size=(120, 160), mode='bilinear') / 255.0
+                
+                # 4. 执行推理提取特征
+                with torch.no_grad():
+                    features = self.visual_extractor.model(input_tensor)
+                
+                # 5. 存入特征缓冲区 (52维)
+                self.visual_features_buf[env_id] = features.squeeze(0)
+                
         except Exception as e:
-            print(f"❌ 提取视觉特征失败: {e}")
-            import traceback
-            traceback.print_exc()
-        
+            print(f"📷 提取失败: {e}")
+
     def _save_camera_images(self):
         """保存摄像头图片"""
         try:
@@ -1414,9 +1414,9 @@ class Kicking(BaseTask):
         """Random push the robots. Emulates an impulse by setting a randomized force."""
         if self.common_step_counter % np.ceil(self.cfg["randomization"]["push_interval_s"] / self.dt) == 0:
             # 调试信息
-            print(f"Debug: pushing_forces shape = {self.pushing_forces.shape}")
-            print(f"Debug: total_bodies_per_env = {self.total_bodies_per_env}")
-            print(f"Debug: Expected shape = [{self.num_envs}, {self.total_bodies_per_env}, 3]")
+            # print(f"Debug: pushing_forces shape = {self.pushing_forces.shape}")
+            # print(f"Debug: total_bodies_per_env = {self.total_bodies_per_env}")
+            # print(f"Debug: Expected shape = [{self.num_envs}, {self.total_bodies_per_env}, 3]")
             
             # 使用正确的刚体索引
             # 假设机器人的基座是第一个刚体（索引0）
@@ -1609,6 +1609,11 @@ class Kicking(BaseTask):
         if self.common_step_counter % 500 == 0:
             print(f"📊 观测维度: 基础={base_obs.shape[1]}, 视觉={visual_obs.shape[1]}, 总计={self.obs_buf.shape[1]}")
             print(f"  视觉特征范围: [{visual_obs.min():.3f}, {visual_obs.max():.3f}], 均值={visual_obs.mean():.3f}")
+
+        if self.common_step_counter == 0:
+            print(f"DEBUG: base_obs shape: {base_obs.shape}")
+            print(f"DEBUG: visual_obs shape: {visual_obs.shape}")
+            print(f"DEBUG: Total obs_buf shape: {self.obs_buf.shape}") # 确认这里是不是 96
 
     def _compute_observations_o(self):
         """Computes observations"""

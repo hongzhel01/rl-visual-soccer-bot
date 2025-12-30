@@ -1,7 +1,7 @@
 basic:
   checkpoint: null # set to -1 to load last saved model
   headless: false
-  max_iterations: 100 # set the maximum number of learning iterations to train for
+  max_iterations: 10000 # set the maximum number of learning iterations to train for
   sim_device: "cpu" # device for physics simulation
   rl_device: "cpu" # device for the RL algorithm
   seed: -1 # seed - set to -1 to choose random seed
@@ -10,8 +10,10 @@ basic:
 
 env:
   num_envs: 1
-  num_observations: 50
-  num_privileged_obs: 26
+  # num_observations: 50
+  # num_privileged_obs: 26
+  num_observations: 96     
+  num_privileged_obs: 72    
   num_actions: 12
   env_spacing: 5.  # not used with plane terrain
 
@@ -22,8 +24,10 @@ runner:
   use_wandb: true
 
 viewer:
-  pos: [3., -3., 2.]  # [m]
-  lookat: [15., 0., 0.]  # [m]
+  # pos: [3., -3., 2.]  # [m]
+  # lookat: [15., 0., 0.]  # [m]
+  pos: [0.0, -4.0, 1.0]  # [m]
+  lookat: [0.0, 0.0, 1.0]  # [m]
   record_video: true  # only in play
   record_interval: 5.  # [s]
   record_env_idx: 0

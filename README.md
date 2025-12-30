@@ -44,3 +44,9 @@ pip install ultralytics opencv-python pillow
 ```
 
 ![识别结果](./1223_detect_ball.jpg)
+
+### 2025/12/30
+
+修改了visual_feature_extractor.py文件，搭建了可用的网络结构，机器人目前可以碰到球，但是不能把球踢出去
+
+![足球踢出演示](./1230_kick_ball.gif)
