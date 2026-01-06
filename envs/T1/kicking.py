@@ -23,7 +23,7 @@ from utils.utils import apply_randomization
 
 from .visual_feature_extractor import VisualFeatureExtractor
 import torch.nn.functional as F 
-
+from ultralytics import YOLO
 
 class Kicking(BaseTask):
 
@@ -31,9 +31,9 @@ class Kicking(BaseTask):
         super().__init__(cfg)
 
         # 初始化视觉特征提取器
-        self._init_visual_extractor()
 
         self._create_envs()
+        self._init_visual_extractor()
         self.gym.prepare_sim(self.sim)
         self._init_buffers()
         self._prepare_reward_function()
@@ -42,7 +42,7 @@ class Kicking(BaseTask):
         self.env_successes = 0
         self.env_falling = 0
         self.ball_velocities = []
-        self.saveImages = False
+        self.saveImages = True
 
     
     def _init_visual_extractor(self):
@@ -63,6 +63,13 @@ class Kicking(BaseTask):
             feature_dim=self.visual_feature_dim,
             device=self.device
         )
+
+        # 加载 YOLOv8 官方权重（建议使用 nano 版本以保证仿真速度）
+        self.yolo_model = YOLO('yolov8n.pt').to(self.device) 
+        
+        # 初始化摄像头角度缓冲区
+        self.camera_pitch_states = torch.full((self.num_envs,), 1.4, device=self.device)
+        self.camera_yaw_states = torch.zeros(self.num_envs, device=self.device)
         
         # print(f"✅ 视觉特征提取器初始化完成 (维度: {self.visual_feature_dim})")
 
@@ -1203,15 +1210,14 @@ class Kicking(BaseTask):
 
         # 1. 检查是否到了处理图像的步数
         if self.common_step_counter % self.visual_process_interval == 0:
-            # 仅在需要提取特征时才渲染，节省显存开销
+            # 仅在需要提取特征时才渲染，节省显存开销 [cite: 251]
             self.gym.render_all_camera_sensors(self.sim)
             self._process_camera_images()
             
             if self.camera_images is not None:
                 # 这里的提取过程耗时约 0.0023 秒 
                 self._extract_visual_features()
-        # if self.camera_images is not None:
-        #     self._extract_visual_features()
+
 
         save_interval = self.cfg.get("camera", {}).get("save_interval", 10)  # 默认每10帧保存一次
         if self.common_step_counter % save_interval & self.saveImages:
@@ -1315,27 +1321,51 @@ class Kicking(BaseTask):
         return self.obs_buf, self.rew_buf, self.reset_buf, self.extras
 
     def _extract_visual_features(self):
+
         try:
-            # 确保模型本身在 GPU 上并处于评估模式
             self.visual_extractor.model.eval() 
+            for env_id in range(self.num_envs):
+                # 1. 获取当前环境的 RGB 图像
+                raw_rgb = self.camera_images[env_id, 0].cpu().numpy()
+                
+                # 2. YOLO 推理
+                results = self.yolo_model.predict(raw_rgb, conf=0.01, verbose=False)
+                
+                ball_center = None
+                for result in results:
+                    # 寻找类别为 'sports ball' (ID: 32) 的检测结果
+                    for box in result.boxes:
+                        if int(box.cls) == 32:
+                            print(f"⚽ 环境 {env_id} 检测到足球，置信度: {box.conf.item():.2f}")
+                            # 获取归一化后的 xywh (x_center, y_center, width, height)
+                            xywhn = box.xywhn.cpu().numpy()[0]
+                            ball_center = [xywhn[0], xywhn[1]] # 获取中心点 [0~1]
+                            break
+                
+                # 3. 如果识别到足球，调用调整角度的函数
+                if ball_center is not None:
+                    print(f"🎯 环境 {env_id} 识别到足球，中心位置: {ball_center}")
+                    self._adjust_camera_by_ball(env_id, ball_center)
+                # else:
+                #     print(f"❌ 环境 {env_id} 未识别到足球，保持当前摄像头角度")
             
             # 预先定义灰度权重并移至 GPU
             rgb_weights = torch.tensor([0.2989, 0.5870, 0.1140], device=self.device)
             
             for env_id in range(self.num_envs):
-                # 1. 立即将原始图像移至 GPU
+                # 1. 立即将原始图像移至 GPU [cite: 251]
                 # self.camera_images 通常在 CPU 上，先搬运再计算
                 raw_rgb = self.camera_images[env_id, 0].to(self.device).float()
                 
-                # 2. 在 GPU 上进行灰度转换 (H, W, 3) -> (1, 1, H, W)
+                # 2. 在 GPU 上进行灰度转换 (H, W, 3) -> (1, 1, H, W) [cite: 111, 204]
                 # 这样产生的 gray 张量天然就在 GPU 上
                 gray = (raw_rgb * rgb_weights).sum(dim=-1).unsqueeze(0).unsqueeze(0)
                 
-                # 3. 在 GPU 上进行缩放至 160x120 
-                # 归一化必须在 GPU 张量上进行
+                # 3. 在 GPU 上进行缩放至论文指定的 160x120 [cite: 125, 205]
+                # 归一化必须在 GPU 张量上进行 [cite: 186]
                 input_tensor = F.interpolate(gray, size=(120, 160), mode='bilinear') / 255.0
                 
-                # 4. 执行推理提取特征
+                # 4. 执行推理提取特征 [cite: 204]
                 with torch.no_grad():
                     features = self.visual_extractor.model(input_tensor)
                 
@@ -1344,6 +1374,41 @@ class Kicking(BaseTask):
                 
         except Exception as e:
             print(f"📷 提取失败: {e}")
+
+    def _adjust_camera_by_ball(self, env_id, ball_center):
+        """
+        ball_center: [x, y] 范围 0~1。0.5 代表中心。
+        """
+        # 计算图像中心偏差
+        err_x = ball_center[0] - 0.5
+        err_y = ball_center[1] - 0.5
+
+        # 增益参数：决定摄像头转动的灵敏度
+        # 注意：这里的正负号需根据实际效果微调
+        kp_yaw = -0.6   
+        kp_pitch = 0.5  
+
+        # 增量更新当前角度
+        self.camera_yaw_states[env_id] += err_x * kp_yaw
+        self.camera_pitch_states[env_id] += err_y * kp_pitch
+
+        # 角度限制：防止摄像头转动过度（弧度制）
+        self.camera_pitch_states[env_id] = torch.clamp(self.camera_pitch_states[env_id], 0.1, 1.4)
+        self.camera_yaw_states[env_id] = torch.clamp(self.camera_yaw_states[env_id], -1.5, 1.5)
+
+        # 构造新的变换
+        local_transform = gymapi.Transform()
+        local_transform.p = gymapi.Vec3(0.4, 0, 0.22) # 保持原安装高度
+        # 应用更新后的 Pitch 和 Yaw
+        local_transform.r = gymapi.Quat.from_euler_zyx(0, self.camera_pitch_states[env_id].item(), self.camera_yaw_states[env_id].item())
+
+        # 获取机器人基座句柄并重新挂载摄像头
+        body_handle = self.gym.get_actor_rigid_body_handle(self.envs[env_id], self.actor_handles[env_id], 0)
+        self.gym.attach_camera_to_body(
+            self.camera_handles[env_id][0], self.envs[env_id], body_handle, 
+            local_transform, gymapi.FOLLOW_POSITION
+        )
+
 
     def _save_camera_images(self):
         """保存摄像头图片"""

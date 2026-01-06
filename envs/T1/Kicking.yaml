@@ -12,8 +12,8 @@ env:
   num_envs: 1
   # num_observations: 50
   # num_privileged_obs: 26
-  num_observations: 96     
-  num_privileged_obs: 72    
+  num_observations: 96      # 假设基础 44 + 视觉 52 = 96
+  num_privileged_obs: 72    # 原本 26 + 视觉 52 = 78 (因为你在代码中也给特权观测加了视觉)
   num_actions: 12
   env_spacing: 5.  # not used with plane terrain
 
@@ -395,7 +395,7 @@ camera:
     height: 480
     fov: 75.0
     position: [0.2, 0.0, 0.22]  # 相对于机器人的位置 [x, y, z]
-    rotation: [0.0, 0.6, 0.0]   # 欧拉角 [pitch, yaw, roll]
+    rotation: [0.0, 1.4, 0.0]   # 欧拉角 [pitch, yaw, roll]
   
   global:
     width: 640
