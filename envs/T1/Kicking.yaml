@@ -10,10 +10,10 @@ basic:
 
 env:
   num_envs: 1
-  # num_observations: 50
-  # num_privileged_obs: 26
-  num_observations: 96      # 假设基础 44 + 视觉 52 = 96
-  num_privileged_obs: 72    # 原本 26 + 视觉 52 = 78 (因为你在代码中也给特权观测加了视觉)
+  num_observations: 44
+  num_privileged_obs: 20
+  # num_observations: 96      # 假设基础 44 + 视觉 52 = 96
+  # num_privileged_obs: 72    # 原本 20 + 视觉 52 = 72 (因为你在代码中也给特权观测加了视觉)
   num_actions: 12
   env_spacing: 5.  # not used with plane terrain
 
@@ -26,7 +26,7 @@ runner:
 viewer:
   # pos: [3., -3., 2.]  # [m]
   # lookat: [15., 0., 0.]  # [m]
-  pos: [0.0, -4.0, 1.0]  # [m]
+  pos: [0.0, -4.0, 10.0]  # [m]
   lookat: [0.0, 0.0, 1.0]  # [m]
   record_video: true  # only in play
   record_interval: 5.  # [s]
@@ -120,10 +120,12 @@ terrain:
   dynamic_friction: 1.0  # [-]
   restitution: 0.        # [-]
   # trimesh only:
-  terrain_length: 10.
-  terrain_width: 10.
-  border_size: 5.
-  num_terrains: 8
+  terrain_length: 1.
+  terrain_width: 1.
+  # terrain_length: 117.
+  # terrain_width: 80.
+  border_size: 0.
+  num_terrains: 1
   terrain_proportions: [1.0, 0.0, 0, 0] # terrain types: [plane, slope, random, discrete]
   slope: 0.1
   random_height: 0.1

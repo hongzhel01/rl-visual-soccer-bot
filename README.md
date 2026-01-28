@@ -1,4 +1,4 @@
-## 环境
+## 环境配置
 
 需要根据[HTWK Gym](https://github.com/NaoHTWK/htwk-gym)，配置好环境
 
@@ -10,7 +10,7 @@ python train.py --task=T1/Kicking
 # Test ball kicking
 python play.py --task=T1/Kicking --checkpoint=-1
 ```
-## 修改
+## 更新日志
 ### 2025/12/08
 
 创建了绿色草地和两个球门
@@ -59,6 +59,40 @@ pip install ultralytics opencv-python pillow
 
 在kicking.py中添加了detect_football模块，通过yolo8自适应调节角度，在第一次识别到足球以后，保证每次读取的画面都包含足球
 
-![识别效果](./images/0106_detect_ball.jpg)
+### 2026/01/28
 
+#### 1. 环境修改 (Environment Modifications)
+对仿真环境进行了以下调整：
+- **草皮尺寸**：调整为 `14 * 9`
+- **球门位置**：已更新
+- **地面材质**：去掉灰色地面
+
+---
+
+#### 2. 方法实现 (Implementation Methods)
+目前实现了两种状态输入方法：一种仅依赖关节信息（基准方法），另一种结合了关节信息与视觉信息（我们的方法）。
+
+| 方法类型 | 对应的 Python 函数 | YAML 配置参数 |
+| :--- | :--- | :--- |
+| **只依赖关节信息**<br>(Joint Only) | **文件**: `kicking.py`<br>**函数**: `_compute_observations` | **文件**: `kicking.yaml`<br>`num_observations: 44`<br>`num_privileged_obs: 20` |
+| **关节 + 视觉信息**<br>(Joint + Visual / Ours) | **文件**: `kicking.py`<br>**函数**: `_compute_observations_visual` | **文件**: `kicking.yaml`<br>`num_observations: 96`<br>`num_privileged_obs: 72` |
+
+#### 3. 详细配置说明
+
+**方案 A：只依赖关节信息 (Baseline)**
+* `kicking.py` -> `_compute_observations`
+* `kicking.yaml`:
+    * `num_observations`: **44**
+    * `num_privileged_obs`: **20**
+
+![识别效果](./images/0128_kick_ball.gif)
+
+
+**方案 B：关节信息 + 视觉信息 (Ours)**
+*  `kicking.py` -> `_compute_observations_visual`
+* `kicking.yaml`:
+    * `num_observations`: **96**
+    * `num_privileged_obs`: **72**
+
+这里只是把关节信息和视觉信息进行拼接，需要优化
 

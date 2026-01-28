@@ -1602,8 +1602,7 @@ class Kicking(BaseTask):
         if self.cfg["rewards"]["only_positive_rewards"]:
             self.rew_buf[:] = torch.clip(self.rew_buf[:], min=0.0)
 
-
-    def _compute_observations(self):
+    def _compute_observations_visual(self):
         """计算观测值（包含视觉特征）"""
         
         # 1. 计算基础观测
@@ -1680,7 +1679,7 @@ class Kicking(BaseTask):
             print(f"DEBUG: visual_obs shape: {visual_obs.shape}")
             print(f"DEBUG: Total obs_buf shape: {self.obs_buf.shape}") # 确认这里是不是 96
 
-    def _compute_observations_o(self):
+    def _compute_observations(self):
         """Computes observations"""
         #commands_scale = torch.tensor(
         #    [self.cfg["normalization"]["lin_vel"], self.cfg["normalization"]["lin_vel"], self.cfg["normalization"]["ang_vel"]],

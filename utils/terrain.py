@@ -106,8 +106,8 @@ class Terrain:
         print(self.env_width)
         print(self.env_length)
         grass_size = gymapi.Vec3(
-            15,
-            40,
+            14,
+            9,
             grass_thickness
         )
 
