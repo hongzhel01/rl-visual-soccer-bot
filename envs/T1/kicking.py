@@ -22,7 +22,7 @@ from envs.base_task import BaseTask
 from utils.utils import apply_randomization
 
 from .visual_feature_extractor import VisualFeatureExtractor
-import torch.nn.functional as F 
+import torch.nn.functional as F  # 添加这一行来定义 'F'
 from ultralytics import YOLO
 
 class Kicking(BaseTask):
@@ -44,7 +44,6 @@ class Kicking(BaseTask):
         self.ball_velocities = []
         self.saveImages = True
 
-    
     def _init_visual_extractor(self):
         # 确保设备定义正确
         if not hasattr(self, 'device'):
@@ -237,8 +236,10 @@ class Kicking(BaseTask):
             # print("terrain:", terrain.grass_asset)
             if terrain.grass_asset is not None:
                 grass_pose = gymapi.Transform()
-                grass_pose.p = gymapi.Vec3(self.env_origins[i][0],
-                                        self.env_origins[i][1],
+                move_x = 0.0   
+                move_y = 0.0
+                grass_pose.p = gymapi.Vec3(self.env_origins[i][0] + move_x,
+                                        self.env_origins[i][1] + move_y,
                                         terrain.grass_z)
                 grass_actor = self.gym.create_actor(
                     env_handle,
@@ -277,33 +278,6 @@ class Kicking(BaseTask):
         self.ball_lin_vel = torch.zeros(self.num_envs, 3, dtype=torch.float, device=self.device)
         self.ball_ang_vel = torch.zeros(self.num_envs, 3, dtype=torch.float, device=self.device)
 
-
-
-        # 存储 handles
-        self.envs.append(env_handle)
-        self.actor_handles.append(actor_handle)
-        self.ball_handles.append(ball_handle)
-
-        # 3. ⭐ 草皮（添加在这里）
-        terrain = self.terrain
-        if terrain.grass_asset is not None:
-            grass_pose = gymapi.Transform()
-            grass_pose.p = gymapi.Vec3(self.env_origins[i][0],
-                                    self.env_origins[i][1],
-                                    terrain.grass_z)
-            grass_actor = self.gym.create_actor(
-                env_handle,
-                terrain.grass_asset,
-                grass_pose,
-                f"grass_{i}",
-                i,
-                0
-            )
-            self.gym.set_rigid_body_color(
-                env_handle, grass_actor, 0,
-                gymapi.MESH_VISUAL,
-                terrain.grass_color
-            )
 
         # ===== 在这里添加摄像头系统 =====
         # 改进的摄像头配置
@@ -576,6 +550,94 @@ class Kicking(BaseTask):
         self.crossbar_asset = crossbar_asset
 
     def _create_goal_in_env(self, env_handle, env_id, is_left_goal=False):
+        """在指定环境中创建球门"""
+        pos = self.env_origins[env_id].clone()
+        
+        # ================= 🔧 手动调整区域 =================
+        # 这里直接控制球门距离场地中心 (0,0) 有多远
+        # 你的场地长 14米，半场就是 7米。
+        # 如果觉得球门太远，把这个数字改小（比如 6.0）
+        # 如果觉得球门太近，把这个数字改大（比如 7.5）
+        distance_from_center = 6.0  
+        
+        # 这里的 0.05 是向下埋的深度，防止悬空
+        embed_depth = 0.05 
+        # ==================================================
+
+        # 1. 计算 X 轴坐标
+        if is_left_goal:
+            # 左球门在负轴
+            base_x = pos[0] - distance_from_center
+        else:
+            # 右球门在正轴
+            base_x = pos[0] + distance_from_center
+            
+        base_y = pos[1]
+        
+        # 2. 计算 Z 轴高度 (确保落地)
+        goal_height = self.cfg["goal"]["height"]
+        base_z = pos[2] + goal_height / 2.0 - embed_depth
+
+        # 打印调试信息（只打印第一个环境的，防止刷屏）
+        if env_id == 0:
+            side = "LEFT" if is_left_goal else "RIGHT"
+            print(f"🥅 创建{side}球门: X={base_x:.2f}, Y={base_y:.2f}, Z={base_z:.2f}")
+
+        goal_handles = []
+        
+        # --- 创建左门柱 ---
+        left_post_pose = gymapi.Transform()
+        left_post_pose.p = gymapi.Vec3(
+            base_x, 
+            base_y - self.cfg["goal"]["width"] / 2 + self.cfg["goal"]["post_radius"],
+            base_z
+        )
+        # 确保门柱垂直，重置旋转
+        left_post_pose.r = gymapi.Quat(0, 0, 0, 1)
+        
+        left_post_handle = self.gym.create_actor(
+            env_handle, self.post_asset, left_post_pose, "goal_post", env_id, 0, 0
+        )
+        goal_handles.append(left_post_handle)
+        
+        # --- 创建右门柱 ---
+        right_post_pose = gymapi.Transform()
+        right_post_pose.p = gymapi.Vec3(
+            base_x,
+            base_y + self.cfg["goal"]["width"] / 2 - self.cfg["goal"]["post_radius"],
+            base_z
+        )
+        right_post_pose.r = gymapi.Quat(0, 0, 0, 1)
+        
+        right_post_handle = self.gym.create_actor(
+            env_handle, self.post_asset, right_post_pose, "goal_post", env_id, 0, 0
+        )
+        goal_handles.append(right_post_handle)
+        
+        # --- 创建横梁 ---
+        crossbar_pose = gymapi.Transform()
+        crossbar_pose.p = gymapi.Vec3(
+            base_x,
+            base_y,
+            # 横梁高度 = 地面 + 球门全高 - 半径 - 埋地深度
+            pos[2] + goal_height - self.cfg["goal"]["post_radius"] - embed_depth
+        )
+        crossbar_pose.r = gymapi.Quat(0, 0, 0, 1)
+        
+        crossbar_handle = self.gym.create_actor(
+            env_handle, self.crossbar_asset, crossbar_pose, "crossbar", env_id, 0, 0
+        )
+        goal_handles.append(crossbar_handle)
+        
+        # 设置为白色
+        for handle in goal_handles:
+            self.gym.set_rigid_body_color(
+                env_handle, handle, 0, gymapi.MESH_VISUAL, 
+                gymapi.Vec3(1.0, 1.0, 1.0) 
+            )
+        
+        return goal_handles
+
         """在指定环境中创建球门"""
         pos = self.env_origins[env_id].clone()
         
@@ -1204,6 +1266,7 @@ class Kicking(BaseTask):
         self.torques /= self.cfg["control"]["decimation"]
         self.render()
 
+        self.gym.step_graphics(self.sim)
         # ===== 在这里添加摄像头处理 =====
         self._process_camera_images()
 
@@ -1219,9 +1282,9 @@ class Kicking(BaseTask):
                 self._extract_visual_features()
 
 
-        save_interval = self.cfg.get("camera", {}).get("save_interval", 10)  # 默认每10帧保存一次
-        if self.common_step_counter % save_interval & self.saveImages:
-            self._save_camera_images()
+        # save_interval = self.cfg.get("camera", {}).get("save_interval", 10)  # 默认每10帧保存一次
+        # if self.common_step_counter % save_interval & self.saveImages:
+        #     self._save_camera_images()
 
         # Store previous ball velocity in world frame *before* refreshing root states for current step
         prev_ball_lin_vel_world = self.root_states[:, 1, 7:10].clone()
@@ -1336,7 +1399,7 @@ class Kicking(BaseTask):
                     # 寻找类别为 'sports ball' (ID: 32) 的检测结果
                     for box in result.boxes:
                         if int(box.cls) == 32:
-                            print(f"⚽ 环境 {env_id} 检测到足球，置信度: {box.conf.item():.2f}")
+                            # print(f"⚽ 环境 {env_id} 检测到足球，置信度: {box.conf.item():.2f}")
                             # 获取归一化后的 xywh (x_center, y_center, width, height)
                             xywhn = box.xywhn.cpu().numpy()[0]
                             ball_center = [xywhn[0], xywhn[1]] # 获取中心点 [0~1]
@@ -1344,7 +1407,7 @@ class Kicking(BaseTask):
                 
                 # 3. 如果识别到足球，调用调整角度的函数
                 if ball_center is not None:
-                    print(f"🎯 环境 {env_id} 识别到足球，中心位置: {ball_center}")
+                    # print(f"🎯 环境 {env_id} 识别到足球，中心位置: {ball_center}")
                     self._adjust_camera_by_ball(env_id, ball_center)
                 # else:
                 #     print(f"❌ 环境 {env_id} 未识别到足球，保持当前摄像头角度")
@@ -1601,6 +1664,7 @@ class Kicking(BaseTask):
             self.extras["rew_terms"][name] = rew # Store the final scaled reward
         if self.cfg["rewards"]["only_positive_rewards"]:
             self.rew_buf[:] = torch.clip(self.rew_buf[:], min=0.0)
+
 
     def _compute_observations_visual(self):
         """计算观测值（包含视觉特征）"""
