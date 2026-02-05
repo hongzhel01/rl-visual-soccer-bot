@@ -318,6 +318,8 @@ rewards:
     body_angle: 0.1
     ball_acceleration: 0.25
     waiting: -1.0
+    ball_visible_align: 0.2
+    blind_speed_penalty: -1.0
   ball_rolling_scale:
     waiting: 0.0
     survival: 0.5
@@ -375,6 +377,8 @@ rewards:
   # Parameters for ball acceleration reward
   ball_acceleration_scale: 80.0        # Scaling factor for acceleration towards target
   max_ball_acceleration_reward: 80.0    # Maximum reward for ball acceleration towards target
+  ball_align_sigma: 5.0        # 越大，对偏差越敏感（中心附近区分更明显）
+  steps_since_seen_threshold: 5     # 连续多少步没看到球才开始惩罚
 
 
 goal:
@@ -392,6 +396,10 @@ goal:
 camera:
   save_interval: 10
   enable_visualization: true
+  enable_video: false         # 是否机器人摄像头记录视频
+  video_fps: 15              # 帧率
+  video_file: "videos/robot_cam.mp4"  #视频保存路径
+  max_steps_without_seeing: 5 # 连续多少步没看到球就开始环视
   robot:
     width: 640
     height: 480
