@@ -386,6 +386,12 @@ class Kicking(BaseTask):
             if not os.path.exists(dir_path):
                 os.makedirs(dir_path)
         
+        self.video_writer = None
+        cam_cfg = self.cfg.get("camera", {})
+        self.video_enabled = cam_cfg.get("enable_video", False)
+        self.video_fps = cam_cfg.get("video_fps", 30)
+        self.video_file = cam_cfg.get("video_file", "videos/robot_cam.mp4")
+
         # print(f"✅ 摄像头系统初始化完成")
 
 
@@ -424,7 +430,41 @@ class Kicking(BaseTask):
                                     self.camera_images[env_id, 0] = resized_image
                                 else:
                                     self.camera_images[env_id, 0] = image_tensor
-                        
+
+                                # ★ 在这里追加写视频（每步一帧）
+                                if self.video_enabled and env_id == 0:
+                                    import cv2
+                                    frame = self.camera_images[env_id, 0].cpu().numpy()
+                                    if frame is not None and frame.ndim == 3:
+                                        bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                                        if self.video_writer is None:
+                                        # 确保目录存在
+                                            video_dir = os.path.dirname(self.video_file)
+                                            if video_dir and not os.path.exists(video_dir):
+                                                os.makedirs(video_dir, exist_ok=True)
+                                            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                                            h2, w2, _ = bgr.shape
+                                            self.video_writer = cv2.VideoWriter(self.video_file, fourcc, self.video_fps, (w2, h2))
+                                            if not self.video_writer.isOpened():
+                                                print(f"❌ VideoWriter 打开失败: {self.video_file}")
+                                                self.video_writer = None
+                                            #else:
+                                                #print(f"🎥 启动机器人摄像头连续录像: {self.video_file}")
+                                        if self.video_writer is not None and self.video_writer.isOpened():
+                                            vel_x = self.base_lin_vel[env_id, 0].item()
+                                            text = f"RobotLinVelX: {vel_x:.3f} m/s"
+                                            cv2.putText(
+                                                bgr,# 要画字的图像（这里是BGR）
+                                                text,# 文本内容
+                                                (10, 30),# 左下角坐标
+                                                cv2.FONT_HERSHEY_SIMPLEX, # 字体
+                                                1.0,# 字体缩放
+                                                (255, 255, 255),# 颜色：白色
+                                                2,# 线宽
+                                                cv2.LINE_AA# 抗锯齿
+                                            )
+                                            self.video_writer.write(bgr)
+
                 except Exception as e:
                     print(f"❌ 处理机器人摄像头失败 - 环境{env_id}: {e}")
             
@@ -762,6 +802,13 @@ class Kicking(BaseTask):
         self.extras = {}
         self.extras["rew_terms"] = {}
         self.extras["ball_detected"] = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+
+        # ====== 初始化YOLO相关可视化状态 ======
+        self.ball_visible = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)# 存储球是否在视野中的缓冲区
+        self.ball_center_offset = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)# 存储球中心偏移的缓冲区
+        self.steps_since_seen = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)# 存储自上次看到球以来的步数缓冲区
+
+        self.extras["ball_detected"] = self.ball_visible  # 之后会在 _extract_visual_features 里更新
 
         # get gym state tensors
         actor_root_state = self.gym.acquire_actor_root_state_tensor(self.sim)
@@ -1283,9 +1330,15 @@ class Kicking(BaseTask):
                 self._extract_visual_features()
 
 
+<<<<<<< HEAD
         save_interval = self.cfg.get("camera", {}).get("save_interval", 10)  # 默认每10帧保存一次
         if self.common_step_counter % save_interval & self.saveImages:
             self._save_camera_images()
+=======
+        # save_interval = self.cfg.get("camera", {}).get("save_interval", 10)  # 默认每10帧保存一次
+        # if (self.common_step_counter % save_interval == 0) & self.saveImages:
+        #     self._save_camera_images()
+>>>>>>> 061031f07f30292ed14a89189df8f3282d9a604c
 
         # Store previous ball velocity in world frame *before* refreshing root states for current step
         prev_ball_lin_vel_world = self.root_states[:, 1, 7:10].clone()
@@ -1408,10 +1461,50 @@ class Kicking(BaseTask):
                 
                 # 3. 如果识别到足球，调用调整角度的函数
                 if ball_center is not None:
-                    # print(f"🎯 环境 {env_id} 识别到足球，中心位置: {ball_center}")
+                    #print(f"🎯 环境 {env_id} 识别到足球，中心位置: {ball_center}")
+                    self.ball_visible[env_id] = 1.0
+
+                    #更新足球中心偏移量和步数计数器
+                    err_x = ball_center[0] - 0.5
+                    err_y = ball_center[1] - 0.5
+                    offset = (err_x ** 2 + err_y ** 2) ** 0.5  # L2 距离，0 表示刚好在中心
+
+                    self.ball_center_offset[env_id] = offset
+                    self.steps_since_seen[env_id] = 0.0
+
                     self._adjust_camera_by_ball(env_id, ball_center)
-                # else:
-                #     print(f"❌ 环境 {env_id} 未识别到足球，保持当前摄像头角度")
+                else:
+                    #print(f"❌ 环境 {env_id} 未识别到足球，保持当前摄像头角度")
+
+                    # 本帧没看到球
+                    self.ball_visible[env_id] = 0.0
+                    self.ball_center_offset[env_id] = 1.0  # 最大偏差（可以理解为“完全看不到”）
+                    self.steps_since_seen[env_id] += 1.0
+
+                    # 如果超过一定步数没看到球，简单的环视逻辑，主动寻找足球
+                    max_steps_without_seeing = self.cfg.get("camera",{}).get("max_steps_without_seeing", 50)
+                    if self.steps_since_seen[env_id] >= max_steps_without_seeing:
+                        #调试
+                        #print(f"🔄 环境 {env_id} 超过 {max_steps_without_seeing} 步未见球，执行环视动作")
+                        # 环视逻辑：让摄像头缓慢左右摆动
+                        sweep_amplitude = 1.5  # 最大偏航角幅度（弧度）
+                        sweep_speed = 0.05     # 每步的偏航角增量
+                        
+                        self.camera_yaw_states[env_id] += sweep_speed
+                        if self.camera_yaw_states[env_id] > sweep_amplitude:
+                            self.camera_yaw_states[env_id] = -sweep_amplitude  # 回到左侧开始新一轮环视
+                        
+                        # 构造新的变换
+                        local_transform = gymapi.Transform()
+                        local_transform.p = gymapi.Vec3(0.4, 0, 0.22) # 保持原安装高度
+                        local_transform.r = gymapi.Quat.from_euler_zyx(0, self.camera_pitch_states[env_id].item(), self.camera_yaw_states[env_id].item())
+
+                        # 获取机器人基座句柄并重新挂载摄像头
+                        body_handle = self.gym.get_actor_rigid_body_handle(self.envs[env_id], self.actor_handles[env_id], 0)
+                        self.gym.attach_camera_to_body(
+                            self.camera_handles[env_id][0], self.envs[env_id], body_handle, 
+                            local_transform, gymapi.FOLLOW_POSITION
+                        )
             
             # 预先定义灰度权重并移至 GPU
             rgb_weights = torch.tensor([0.2989, 0.5870, 0.1140], device=self.device)
@@ -1504,6 +1597,15 @@ class Kicking(BaseTask):
                                 cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
                         cv2.putText(bgr_image, f"Interval{save_interval}", (10, 110), 
                                 cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                        #是否检测到足球
+                        # cv2.putText(bgr_image, f"BallVisible:{int(self.ball_visible[env_id].item())}", (10, 150), 
+                        #         cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                        #偏移量
+                        # cv2.putText(bgr_image, f"BallOffset:{self.ball_center_offset[env_id].item():.3f}", (10, 190), 
+                        #         cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                        #偏航角
+                        # cv2.putText(bgr_image, f"CamYaw:{self.camera_yaw_states[env_id].item():.3f}", (10, 230), 
+                        #         cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
                         
                         cv2.imwrite(filename, bgr_image)
                 
@@ -2403,3 +2505,41 @@ class Kicking(BaseTask):
         reward = progress * progress
         
         return reward
+    
+    def _reward_ball_visible_align(self):
+        """
+        球在视野中时，鼓励它出现在画面中央。
+        ball_center_offset 越小，奖励越大；看不到球时奖励为 0。
+        """
+
+        # 0 表示刚好在中心，1 左右表示偏得比较远
+        # 在_extract_visual_features中存储了self.ball_center_offset = (err_x ** 2 + err_y ** 2) ** 0.5
+        offset = self.ball_center_offset  # 0 ~ 1 左右
+        visible = self.ball_visible       # 0 or 1
+
+        # 控制衰减速度的参数，数值越大，对偏差越敏感
+        alpha = self.cfg["rewards"].get("ball_align_sigma", 5.0)
+
+        # 形状：offset=0 时 ~1，偏离变大时指数衰减
+        align_reward = torch.exp(-alpha * offset)
+
+        # 只在看到球的时候生效，没看到球的时候visible==0
+        return align_reward * visible
+    
+    def _reward_blind_speed_penalty(self):
+        """
+        长时间看不到球时，对机器人在地面平面上的速度给惩罚。
+        返回的是速度大小 v_xy,真正的惩罚由 YAML 里的负权重决定。
+        """
+        # 连续多少步没看到球才开始惩罚
+        steps_threshold = self.cfg["rewards"].get("steps_since_seen_threshold", 10)
+
+        # mask: 只有当 steps_since_seen > 阈值 且当前看不到球时才生效
+        cond = (self.steps_since_seen > steps_threshold) * (self.ball_visible < 0.5)
+        mask = cond.float()
+
+        # 机器人本体在 x-y 平面的速度（已经做了滤波）
+        v_xy = torch.norm(self.filtered_lin_vel[:, :2], dim=-1)  # >= 0
+
+        # 返回正数，scale 设为负即为惩罚
+        return v_xy * mask

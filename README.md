@@ -67,8 +67,6 @@ pip install ultralytics opencv-python pillow
 - **球门位置**：已更新
 - **地面材质**：去掉灰色地面
 
----
-
 #### 2. 方法实现 (Implementation Methods)
 目前实现了两种状态输入方法：一种仅依赖关节信息（基准方法），另一种结合了关节信息与视觉信息（我们的方法）。
 
