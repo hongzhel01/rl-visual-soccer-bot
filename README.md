@@ -96,3 +96,6 @@ pip install ultralytics opencv-python pillow
 
 这里只是把关节信息和视觉信息进行拼接，需要优化
 
+### 2026/02/15
+添加奖赏函数，并进行调试，机器人能够将球踢出
+![踢出效果](./images/0128_kick_ball.gif)
