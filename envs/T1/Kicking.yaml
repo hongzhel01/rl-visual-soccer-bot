@@ -1,6 +1,5 @@
 basic:
-  # checkpoint: null # set to -1 to load last saved model
-  checkpoint: "/data1/liuhongzhe/proj/1208/htwk-gym/logs/T1/T1/Kicking/2026-02-05-14-22-31-leakyMask_bigNet_1e-5/nn/model_10000.pth" # set to -1 to load last saved model
+  checkpoint: null # set to -1 to load last saved model
   headless: false
   max_iterations: 10000 # set the maximum number of learning iterations to train for
   sim_device: "cpu" # device for physics simulation
@@ -13,8 +12,6 @@ env:
   num_envs: 1
   # num_observations: 44
   # num_privileged_obs: 20
-  # num_observations: 49
-  # num_privileged_obs: 25
   num_observations: 96      # 假设基础 44 + 视觉 52 = 96
   num_privileged_obs: 72    # 原本 20 + 视觉 52 = 72 (因为你在代码中也给特权观测加了视觉)
   num_actions: 12
@@ -36,9 +33,7 @@ viewer:
   record_env_idx: 0
 
 algorithm:
-  learning_rate: 2.e-5
-  # learning_rate: 5.e-4
-  # learning_rate: 3.e-4
+  learning_rate: 3.e-4
   gamma: 0.995
   lam: 0.95
   bound_coef: 1.0
@@ -230,7 +225,6 @@ randomization:
     range: [-0.25, -0.1]
     operation: "additive"
     distribution: "uniform"
-
   # ball_init_pos_x:
   #   range: [0.25, 0.4]
   #   operation: "additive"
@@ -239,7 +233,6 @@ randomization:
   #   range: [0, 0.2]
   #   operation: "additive"
   #   distribution: "uniform"
-
 
   kick_interval_s: 2.
   kick_lin_vel:

@@ -20,8 +20,7 @@ import numpy as np
 from envs.base_task import BaseTask
 
 from utils.utils import apply_randomization
-from utils.terrain import Terrain
-# from envs.terrain import Terrain
+
 from .visual_feature_extractor import VisualFeatureExtractor
 import torch.nn.functional as F  # 添加这一行来定义 'F'
 from ultralytics import YOLO
@@ -43,7 +42,7 @@ class Kicking(BaseTask):
         self.env_successes = 0
         self.env_falling = 0
         self.ball_velocities = []
-        self.saveImages = False
+        self.saveImages = True
 
     def _init_visual_extractor(self):
         # 确保设备定义正确
@@ -1330,9 +1329,6 @@ class Kicking(BaseTask):
                 self._extract_visual_features()
 
 
-        save_interval = self.cfg.get("camera", {}).get("save_interval", 10)  # 默认每10帧保存一次
-        if self.common_step_counter % save_interval & self.saveImages:
-            self._save_camera_images()
         # save_interval = self.cfg.get("camera", {}).get("save_interval", 10)  # 默认每10帧保存一次
         # if (self.common_step_counter % save_interval == 0) & self.saveImages:
         #     self._save_camera_images()
@@ -1765,232 +1761,6 @@ class Kicking(BaseTask):
         if self.cfg["rewards"]["only_positive_rewards"]:
             self.rew_buf[:] = torch.clip(self.rew_buf[:], min=0.0)
 
-    def _compute_observations_visual_topk_leaky(self):
-        """计算观测值（优化版：应用 Leaky Top-K 掩码，防止信号闪烁）"""
-        
-        # 1. 计算基础观测 (保持不变)
-        ball_pos_world_frame = self.ball_pos - self.base_pos
-        relative_ball_pos = quat_rotate_inverse(self.base_quat, ball_pos_world_frame)
-        
-        base_obs_parts = [
-            apply_randomization(self.projected_gravity, self.cfg["noise"].get("gravity")) * self.cfg["normalization"]["gravity"],
-            apply_randomization(self.base_ang_vel, self.cfg["noise"].get("ang_vel")) * self.cfg["normalization"]["ang_vel"],
-            # 注意：如果这里的噪声太大，机器人就必须依赖视觉。如果视觉不稳定，就会踢空。
-            apply_randomization(relative_ball_pos[:, 0:2], self.cfg["noise"].get("ball_pos")) * self.cfg["normalization"]["ball_pos"],  
-            apply_randomization(self.dof_pos - self.default_dof_pos, self.cfg["noise"].get("dof_pos")) * self.cfg["normalization"]["dof_pos"],
-            apply_randomization(self.dof_vel, self.cfg["noise"].get("dof_vel")) * self.cfg["normalization"]["dof_vel"],
-            self.actions,
-        ]
-        base_obs = torch.cat(base_obs_parts, dim=-1)
-        
-        # 2. 获取并初步处理视觉特征
-        visual_obs = self.visual_features_buf.clone()
-        
-        # 3. 噪声处理 (保持不变)
-        try:
-            visual_noise_params = self.cfg.get("noise", {}).get("visual_noise_params")
-            if visual_noise_params is not None:
-                visual_obs = apply_randomization(visual_obs, visual_noise_params)
-            else:
-                visual_noise_scale = self.cfg.get("noise", {}).get("visual_noise", 0.0)
-                if visual_noise_scale > 0:
-                    visual_obs = visual_obs + torch.randn_like(visual_obs) * visual_noise_scale
-        except Exception as e:
-            print(f"⚠️ 视觉特征随机化失败: {e}")
-            
-        # 4. 归一化与特征增强
-        visual_scale = self.cfg.get("normalization", {}).get("visual_scale", 1.0)
-        #稍微放大视觉特征的权重，确保网络重视它
-        visual_obs = visual_obs * visual_scale * 1.2 
-
-        # --- [优化修改点]: Leaky Top-K 掩码 ---
-        k = self.cfg.get("visual", {}).get("top_k", 8)
-        
-        if k < visual_obs.shape[-1]:
-            # 1. 找到 Top-K
-            _, indices = torch.topk(visual_obs.abs(), k, dim=-1) # 建议用绝对值 abs() 找能量最大的
-            
-            # 2. 创建"漏水"掩码 (Leaky Mask)
-            leak_factor = 0.1 
-            mask = torch.ones_like(visual_obs) * leak_factor 
-            
-            # 3. 将 Top-K 的位置设为 1.0
-            mask.scatter_(-1, indices, 1.0)
-            
-            # 4. 应用掩码
-            visual_obs = visual_obs * mask
-        # ----------------------------------------
-        
-        # 5. 拼接
-        self.obs_buf = torch.cat([base_obs, visual_obs], dim=-1)
-        
-        # 6. 特权观测 (保持不变)
-        if hasattr(self, 'privileged_obs_buf'):
-            privileged_base_parts = [
-                self.base_mass_scaled,
-                apply_randomization(self.base_lin_vel, self.cfg["noise"].get("lin_vel")) * self.cfg["normalization"]["lin_vel"],
-                apply_randomization(self.base_pos[:, 2] - self.terrain.terrain_heights(self.base_pos), self.cfg["noise"].get("height")).unsqueeze(-1),
-                self.ball_lin_vel[:, 0:2],
-                self.feet_pos[:, 0, 0:2],
-                self.feet_pos[:, 1, 0:2],
-                self.pushing_forces[:, 0, :] * self.cfg["normalization"]["push_force"],
-                self.pushing_torques[:, 0, :] * self.cfg["normalization"]["push_torque"],
-            ]
-            privileged_base_obs = torch.cat(privileged_base_parts, dim=-1)
-            # 特权观测通常不需要掩码，给 Critic 看完整信息有助于它评估状态价值
-            # 如果显存允许，建议这里用 self.visual_features_buf.clone() 而不是处理后的 visual_obs
-            self.privileged_obs_buf = torch.cat([privileged_base_obs, visual_obs], dim=-1)
-            self.extras["privileged_obs"] = self.privileged_obs_buf
-        
-        # 7. 调试输出
-        if self.common_step_counter % 1000 == 0:
-             print(f"📊 Top-K Leaky Mask: 保留前 {k} 个特征 (1.0), 其余特征缩放为 {leak_factor}")
-
-
-    def _compute_observations_visual_topk(self):
-        """计算观测值（应用 Top-K 能量掩码提取视觉关键特征）"""
-        
-        # 1. 计算基础观测 (保持不变)
-        ball_pos_world_frame = self.ball_pos - self.base_pos
-        relative_ball_pos = quat_rotate_inverse(self.base_quat, ball_pos_world_frame)
-        
-        base_obs_parts = [
-            apply_randomization(self.projected_gravity, self.cfg["noise"].get("gravity")) * self.cfg["normalization"]["gravity"],
-            apply_randomization(self.base_ang_vel, self.cfg["noise"].get("ang_vel")) * self.cfg["normalization"]["ang_vel"],
-            apply_randomization(relative_ball_pos[:, 0:2], self.cfg["noise"].get("ball_pos")) * self.cfg["normalization"]["ball_pos"],  
-            apply_randomization(self.dof_pos - self.default_dof_pos, self.cfg["noise"].get("dof_pos")) * self.cfg["normalization"]["dof_pos"],
-            apply_randomization(self.dof_vel, self.cfg["noise"].get("dof_vel")) * self.cfg["normalization"]["dof_vel"],
-            self.actions,
-        ]
-        base_obs = torch.cat(base_obs_parts, dim=-1)
-        
-        # 2. 获取并初步处理视觉特征
-        visual_obs = self.visual_features_buf.clone()
-        
-        # 3. 对视觉特征进行处理 (噪声/归一化)
-        try:
-            visual_noise_params = self.cfg.get("noise", {}).get("visual_noise_params")
-            if visual_noise_params is not None:
-                visual_obs = apply_randomization(visual_obs, visual_noise_params)
-            else:
-                visual_noise_scale = self.cfg.get("noise", {}).get("visual_noise", 0.0)
-                if visual_noise_scale > 0:
-                    noise = torch.randn_like(visual_obs) * visual_noise_scale
-                    visual_obs = visual_obs + noise
-        except Exception as e:
-            print(f"⚠️ 视觉特征随机化失败: {e}")
-            
-        visual_scale = self.cfg.get("normalization", {}).get("visual_scale", 1.0)
-        visual_obs = visual_obs * visual_scale
-        # --- [关键修改点]: 应用 Top-K 能量掩码 ---
-        # 目的：只保留最显著的 K 个特征，其余置为 0
-        k = self.cfg.get("visual", {}).get("top_k", 8) # 建议在 cfg 中设置，默认取前 8 个
-        if k < visual_obs.shape[-1]:
-            # 找到每一行中前 K 个最大值的索引
-            _, indices = torch.topk(visual_obs, k, dim=-1)
-            # 创建全 0 掩码并根据索引填充 1
-            mask = torch.zeros_like(visual_obs).scatter_(-1, indices, 1.0)
-            # 应用掩码
-            visual_obs = visual_obs * mask
-        # ----------------------------------------
-        
-        # 5. 拼接基础观测和掩码后的视觉观测
-        self.obs_buf = torch.cat([base_obs, visual_obs], dim=-1)
-        
-        # 6. 计算特权观测 (同样建议应用掩码或保持原始，这里同步掩码)
-        if hasattr(self, 'privileged_obs_buf'):
-            privileged_base_parts = [
-                self.base_mass_scaled,
-                apply_randomization(self.base_lin_vel, self.cfg["noise"].get("lin_vel")) * self.cfg["normalization"]["lin_vel"],
-                apply_randomization(self.base_pos[:, 2] - self.terrain.terrain_heights(self.base_pos), self.cfg["noise"].get("height")).unsqueeze(-1),
-                self.ball_lin_vel[:, 0:2],
-                self.feet_pos[:, 0, 0:2],
-                self.feet_pos[:, 1, 0:2],
-                self.pushing_forces[:, 0, :] * self.cfg["normalization"]["push_force"],
-                self.pushing_torques[:, 0, :] * self.cfg["normalization"]["push_torque"],
-            ]
-            privileged_base_obs = torch.cat(privileged_base_parts, dim=-1)
-            self.privileged_obs_buf = torch.cat([privileged_base_obs, visual_obs], dim=-1)
-            self.extras["privileged_obs"] = self.privileged_obs_buf
-        
-        # 7. 调试输出
-        if self.common_step_counter % 500 == 0:
-            active_count = (visual_obs > 0).sum(dim=-1).float().mean().item()
-            print(f"📊 观测维度: 基础={base_obs.shape[1]}, 视觉={visual_obs.shape[1]}")
-            print(f"   Top-K 激活状态: 平均保留 {active_count:.1f} 个关键特征")
-        if self.common_step_counter == 0:
-            print(f"DEBUG: Total obs_buf shape: {self.obs_buf.shape}")
-
-
-    def _compute_observations_visual_clip(self):
-        """计算观测值（仅保留关键的少部分视觉特征）"""
-        
-        # 1. 计算基础观测 (保持不变)
-        ball_pos_world_frame = self.ball_pos - self.base_pos
-        relative_ball_pos = quat_rotate_inverse(self.base_quat, ball_pos_world_frame)
-        
-        base_obs_parts = [
-            apply_randomization(self.projected_gravity, self.cfg["noise"].get("gravity")) * self.cfg["normalization"]["gravity"],
-            apply_randomization(self.base_ang_vel, self.cfg["noise"].get("ang_vel")) * self.cfg["normalization"]["ang_vel"],
-            apply_randomization(relative_ball_pos[:, 0:2], self.cfg["noise"].get("ball_pos")) * self.cfg["normalization"]["ball_pos"],  
-            apply_randomization(self.dof_pos - self.default_dof_pos, self.cfg["noise"].get("dof_pos")) * self.cfg["normalization"]["dof_pos"],
-            apply_randomization(self.dof_vel, self.cfg["noise"].get("dof_vel")) * self.cfg["normalization"]["dof_vel"],
-            self.actions,
-        ]
-        
-        base_obs = torch.cat(base_obs_parts, dim=-1)
-        
-        # 2. 获取视觉特征并进行“切片”处理
-        # 假设视觉特征原本有 32 维，但你只想要前 5 维 (例如：置信度 + 边界框)
-        keep_dim = 5  # <--- 这里修改你想要保留的特征维度数量
-        visual_obs_full = self.visual_features_buf.clone()
-        visual_obs = visual_obs_full[:, :keep_dim] 
-        
-        # 3. 对视觉特征进行处理 (仅针对保留的部分)
-        try:
-            visual_noise_params = self.cfg.get("noise", {}).get("visual_noise_params")
-            if visual_noise_params is not None:
-                # 注意：如果使用随机化函数，确保参数维度与切片后的 visual_obs 匹配
-                visual_obs = apply_randomization(visual_obs, visual_noise_params)
-            else:
-                visual_noise_scale = self.cfg.get("noise", {}).get("visual_noise", 0.0)
-                if visual_noise_scale > 0:
-                    noise = torch.randn_like(visual_obs) * visual_noise_scale
-                    visual_obs = visual_obs + noise
-        except Exception as e:
-            print(f"⚠️ 视觉特征随机化失败: {e}")
-        
-        # 4. 归一化 (仅针对保留的部分)
-        visual_scale = self.cfg.get("normalization", {}).get("visual_scale", 1.0)
-        visual_obs = visual_obs * visual_scale
-        
-        # 5. 拼接基础观测和【切片后】的视觉观测
-        # 这样 self.obs_buf 的总长度会变短，网络接收到的视觉信息就只有那一小部分
-        self.obs_buf = torch.cat([base_obs, visual_obs], dim=-1)
-        
-        # 6. 计算特权观测 (特权观测通常可以保留完整的视觉信息，也可以同步切片)
-        if hasattr(self, 'privileged_obs_buf'):
-            privileged_base_parts = [
-                self.base_mass_scaled,
-                apply_randomization(self.base_lin_vel, self.cfg["noise"].get("lin_vel")) * self.cfg["normalization"]["lin_vel"],
-                apply_randomization(self.base_pos[:, 2] - self.terrain.terrain_heights(self.base_pos), self.cfg["noise"].get("height")).unsqueeze(-1),
-                self.ball_lin_vel[:, 0:2],
-                self.feet_pos[:, 0, 0:2],
-                self.feet_pos[:, 1, 0:2],
-                self.pushing_forces[:, 0, :] * self.cfg["normalization"]["push_force"],
-                self.pushing_torques[:, 0, :] * self.cfg["normalization"]["push_torque"],
-            ]
-            privileged_base_obs = torch.cat(privileged_base_parts, dim=-1)
-            
-            # 这里也同步为切片后的特征
-            self.privileged_obs_buf = torch.cat([privileged_base_obs, visual_obs], dim=-1)
-            self.extras["privileged_obs"] = self.privileged_obs_buf
-        
-        # 7. 调试输出
-        if self.common_step_counter % 500 == 0:
-            print(f"📊 观测维度: 基础={base_obs.shape[1]}, 视觉(切片后)={visual_obs.shape[1]}, 总计={self.obs_buf.shape[1]}")
-        if self.common_step_counter == 0:
-            print(f"DEBUG: visual_obs (sliced) shape: {visual_obs.shape}")
 
     def _compute_observations_visual(self):
         """计算观测值（包含视觉特征）"""
@@ -2069,49 +1839,6 @@ class Kicking(BaseTask):
             print(f"DEBUG: visual_obs shape: {visual_obs.shape}")
             print(f"DEBUG: Total obs_buf shape: {self.obs_buf.shape}") # 确认这里是不是 96
 
-    def _compute_observations_o(self):
-        """Computes observations"""
-        #commands_scale = torch.tensor(
-        #    [self.cfg["normalization"]["lin_vel"], self.cfg["normalization"]["lin_vel"], self.cfg["normalization"]["ang_vel"]],
-        #    device=self.device,
-        #)
-        
-        # Calculate ball position relative to the robot
-        ball_pos_world_frame = self.ball_pos - self.base_pos
-        relative_ball_pos = quat_rotate_inverse(self.base_quat, ball_pos_world_frame)
-
-        self.obs_buf = torch.cat(
-            (
-                apply_randomization(self.projected_gravity, self.cfg["noise"].get("gravity")) * self.cfg["normalization"]["gravity"],
-                apply_randomization(self.base_ang_vel, self.cfg["noise"].get("ang_vel")) * self.cfg["normalization"]["ang_vel"],
-                # Use relative ball position in observations
-                apply_randomization(relative_ball_pos[:, 0:2], self.cfg["noise"].get("ball_pos")) * self.cfg["normalization"]["ball_pos"],  
-                #relative_ball_vel[:, 0:2],
-                #self.commands[:, :3] * commands_scale,
-                #(torch.cos(2 * torch.pi * self.gait_process) * (self.gait_frequency > 1.0e-8).float()).unsqueeze(-1),
-                #(torch.sin(2 * torch.pi * self.gait_process) * (self.gait_frequency > 1.0e-8).float()).unsqueeze(-1),
-                apply_randomization(self.dof_pos - self.default_dof_pos, self.cfg["noise"].get("dof_pos")) * self.cfg["normalization"]["dof_pos"],
-                apply_randomization(self.dof_vel, self.cfg["noise"].get("dof_vel")) * self.cfg["normalization"]["dof_vel"],
-                self.actions,
-            ),
-            dim=-1,
-        )
-        self.privileged_obs_buf = torch.cat(
-            (
-                self.base_mass_scaled,
-                apply_randomization(self.base_lin_vel, self.cfg["noise"].get("lin_vel")) * self.cfg["normalization"]["lin_vel"],
-                apply_randomization(self.base_pos[:, 2] - self.terrain.terrain_heights(self.base_pos), self.cfg["noise"].get("height")).unsqueeze(-1),
-                self.ball_lin_vel[:, 0:2],
-                self.feet_pos[:, 0, 0:2],
-                self.feet_pos[:, 1, 0:2],
-                self.pushing_forces[:, 0, :] * self.cfg["normalization"]["push_force"],
-                self.pushing_torques[:, 0, :] * self.cfg["normalization"]["push_torque"],
-            ),
-            dim=-1,
-        )
-        self.extras["privileged_obs"] = self.privileged_obs_buf
-
-   
     def _compute_observations(self):
         """计算观测值（优化版：应用 Leaky Top-K 掩码，防止信号闪烁）"""
         
@@ -2198,7 +1925,6 @@ class Kicking(BaseTask):
         # 7. 调试输出
         if self.common_step_counter % 1000 == 0:
              print(f"📊 Top-K Leaky Mask: 保留前 {k} 个特征 (1.0), 其余特征缩放为 {leak_factor}")
-
 
 
     # ------------ reward functions----------------
