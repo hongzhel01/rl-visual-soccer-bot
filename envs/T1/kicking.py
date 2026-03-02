@@ -1330,15 +1330,12 @@ class Kicking(BaseTask):
                 self._extract_visual_features()
 
 
-<<<<<<< HEAD
         save_interval = self.cfg.get("camera", {}).get("save_interval", 10)  # 默认每10帧保存一次
         if self.common_step_counter % save_interval & self.saveImages:
             self._save_camera_images()
-=======
         # save_interval = self.cfg.get("camera", {}).get("save_interval", 10)  # 默认每10帧保存一次
         # if (self.common_step_counter % save_interval == 0) & self.saveImages:
         #     self._save_camera_images()
->>>>>>> 061031f07f30292ed14a89189df8f3282d9a604c
 
         # Store previous ball velocity in world frame *before* refreshing root states for current step
         prev_ball_lin_vel_world = self.root_states[:, 1, 7:10].clone()
