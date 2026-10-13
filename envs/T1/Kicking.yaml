@@ -157,6 +157,34 @@ commands:
   lin_vel_y_toler: 0.2 # [m/s]
   ang_vel_yaw_toler: 0.2 # [rad/s]
 
+# ============ 新增：课程学习配置 ============
+curriculum_learning:
+  enabled: true
+  stages:
+    - name: "Stage1_Vision"
+      ball_distance_range: [1.5, 2.5]
+      success_threshold: 0.7
+      required_successes: 50
+    - name: "Stage2_Approach"
+      ball_distance_range: [0.8, 1.5]
+      success_threshold: 0.75
+      required_successes: 50
+    - name: "Stage3_Kick"
+      ball_distance_range: [0.3, 0.8]
+      success_threshold: 0.8
+      required_successes: 50
+    - name: "Stage4_Recovery"
+      ball_distance_range: [0.3, 0.8]
+      success_threshold: 0.85
+      required_successes: 100
+
+# ============ 新增：步态相位控制配置 ============
+gait_phase:
+  enabled: true
+  frequency: 1.0  # Hz
+  use_phase_rewards: true
+# =============================================
+
 normalization:
   gravity: 1.0
   lin_vel: 1.0
@@ -328,6 +356,14 @@ rewards:
     waiting: -1.0
     ball_visible_align: 0.2
     blind_speed_penalty: -1.0
+    # ============ 新增：步态相位相关奖励权重 ============
+    gait_phase_alignment: 2.0
+    stance_stability: 1.0
+    smooth_phase_transition: 0.5
+    swing_leg_clearance: 0.3
+    contact_timing: 1.0
+    kick_impact_timing: 5.0
+    # ==================================================
   ball_rolling_scale:
     waiting: 0.0
     survival: 0.5
