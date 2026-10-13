@@ -1,0 +1,56 @@
+# 仅步态相位配置：只使用步态相位控制，不使用课程学习
+# 用于消融实验，验证步态相位控制的独立贡献
+
+basic:
+  checkpoint: null
+  headless: false
+  max_iterations: 10000
+  sim_device: "cpu"
+  rl_device: "cpu"
+  seed: 42
+  description: "Gait Phase Control Only"
+  enable_csv_logging: true
+
+env:
+  num_envs: 1
+  num_observations: 96
+  num_privileged_obs: 72
+  num_actions: 12
+  env_spacing: 5.
+
+runner:
+  horizon_length: 24
+  mini_epochs: 20
+  save_interval: 100
+  use_wandb: true
+
+# ============ 关键差异：关闭课程学习 ============
+curriculum_learning:
+  enabled: false  # 关闭课程学习
+
+# ============ 关键差异：开启步态相位控制 ============
+gait_phase:
+  enabled: true  # 开启步态相位控制
+  frequency: 1.0
+  use_phase_rewards: true
+
+rewards:
+  scales:
+    survival: 0.25
+    tracking_lin_vel_x: 1
+    tracking_lin_vel_y: 1
+    tracking_ang_vel: 0.25
+    base_height: -200.
+    orientation: -20
+    torques: -2.e-4
+    ball_velocity_target_direction: 10
+    kicking_foot_approach_ball_stationary: 10
+    body_alignment_for_kick: 1
+    ball_visible_align: 0.2
+    # 开启步态相位奖励
+    gait_phase_alignment: 2.0
+    stance_stability: 1.0
+    smooth_phase_transition: 0.5
+    swing_leg_clearance: 0.3
+    contact_timing: 1.0
+    kick_impact_timing: 5.0

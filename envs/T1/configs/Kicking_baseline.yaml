@@ -1,0 +1,56 @@
+# Baseline 配置：不使用课程学习和步态相位控制
+# 用于对比实验，验证新方法的有效性
+
+basic:
+  checkpoint: null
+  headless: false
+  max_iterations: 10000
+  sim_device: "cpu"
+  rl_device: "cpu"
+  seed: 42
+  description: "Baseline - No Curriculum, No Gait Phase"
+  enable_csv_logging: true
+
+env:
+  num_envs: 1
+  num_observations: 96
+  num_privileged_obs: 72
+  num_actions: 12
+  env_spacing: 5.
+
+runner:
+  horizon_length: 24
+  mini_epochs: 20
+  save_interval: 100
+  use_wandb: true
+
+# ============ 关键差异：关闭课程学习 ============
+curriculum_learning:
+  enabled: false  # 关闭课程学习
+
+# ============ 关键差异：关闭步态相位控制 ============
+gait_phase:
+  enabled: false  # 关闭步态相位控制
+  frequency: 1.0
+  use_phase_rewards: false
+
+rewards:
+  scales:
+    survival: 0.25
+    tracking_lin_vel_x: 1
+    tracking_lin_vel_y: 1
+    tracking_ang_vel: 0.25
+    base_height: -200.
+    orientation: -20
+    torques: -2.e-4
+    ball_velocity_target_direction: 10
+    kicking_foot_approach_ball_stationary: 10
+    body_alignment_for_kick: 1
+    ball_visible_align: 0.2
+    # 关闭步态相位奖励
+    gait_phase_alignment: 0.0
+    stance_stability: 0.0
+    smooth_phase_transition: 0.0
+    swing_leg_clearance: 0.0
+    contact_timing: 0.0
+    kick_impact_timing: 0.0

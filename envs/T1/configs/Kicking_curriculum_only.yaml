@@ -1,0 +1,73 @@
+# 仅课程学习配置：只使用课程学习，不使用步态相位控制
+# 用于消融实验，验证课程学习的独立贡献
+
+basic:
+  checkpoint: null
+  headless: false
+  max_iterations: 10000
+  sim_device: "cpu"
+  rl_device: "cpu"
+  seed: 42
+  description: "Curriculum Learning Only"
+  enable_csv_logging: true
+
+env:
+  num_envs: 1
+  num_observations: 96
+  num_privileged_obs: 72
+  num_actions: 12
+  env_spacing: 5.
+
+runner:
+  horizon_length: 24
+  mini_epochs: 20
+  save_interval: 100
+  use_wandb: true
+
+# ============ 关键差异：开启课程学习 ============
+curriculum_learning:
+  enabled: true  # 开启课程学习
+  stages:
+    - name: "Stage1_Vision"
+      ball_distance_range: [1.5, 2.5]
+      success_threshold: 0.7
+      required_successes: 50
+    - name: "Stage2_Approach"
+      ball_distance_range: [0.8, 1.5]
+      success_threshold: 0.75
+      required_successes: 50
+    - name: "Stage3_Kick"
+      ball_distance_range: [0.3, 0.8]
+      success_threshold: 0.8
+      required_successes: 50
+    - name: "Stage4_Recovery"
+      ball_distance_range: [0.3, 0.8]
+      success_threshold: 0.85
+      required_successes: 100
+
+# ============ 关键差异：关闭步态相位控制 ============
+gait_phase:
+  enabled: false  # 关闭步态相位控制
+  frequency: 1.0
+  use_phase_rewards: false
+
+rewards:
+  scales:
+    survival: 0.25
+    tracking_lin_vel_x: 1
+    tracking_lin_vel_y: 1
+    tracking_ang_vel: 0.25
+    base_height: -200.
+    orientation: -20
+    torques: -2.e-4
+    ball_velocity_target_direction: 10
+    kicking_foot_approach_ball_stationary: 10
+    body_alignment_for_kick: 1
+    ball_visible_align: 0.2
+    # 关闭步态相位奖励
+    gait_phase_alignment: 0.0
+    stance_stability: 0.0
+    smooth_phase_transition: 0.0
+    swing_leg_clearance: 0.0
+    contact_timing: 0.0
+    kick_impact_timing: 0.0
