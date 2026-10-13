@@ -331,58 +331,10 @@ rewards:
 ```bibtex
 @misc{rl-visual-soccer-bot,
   title={RL-Visual-Soccer-Bot: A Reinforcement Learning Approach for Visual Soccer with Gait Synchronization},
-  author={Your Name},
+  author={Hongzhe Liu},
   year={2026},
-  url={https://github.com/yourusername/rl-visual-soccer-bot}
+  url={https://github.com/hongzhel01/rl-visual-soccer-bot}
 }
 ```
 
 ---
-
-## 🤝 贡献
-
-欢迎提交Issue和Pull Request！
-
-### 开发路线图
-
-- [x] 课程学习框架
-- [x] 步态相位时钟
-- [x] 多模态信息瓶颈
-- [x] 端到端控制
-- [ ] 实时视觉处理优化
-- [ ] 多机器人协作
-- [ ] 对抗训练
-
----
-
-## 📄 许可证
-
-本项目基于 [MIT License](LICENSE) 开源。
-
----
-
-## 👥 作者
-
-- **项目负责人**：[Your Name]
-- **技术支持**：Claude Opus 5
-
----
-
-## 🙏 致谢
-
-- Isaac Gym 团队提供的物理仿真环境
-- HTWK Leipzig 机器人足球队的原始代码库
-- 所有贡献者和用户
-
----
-
-## 📞 联系方式
-
-- Email: your.email@example.com
-- GitHub Issues: [提交问题](https://github.com/yourusername/rl-visual-soccer-bot/issues)
-
----
-
-**最后更新**：2026-10-12  
-**版本**：v1.0.0  
-**状态**：✅ 稳定版
