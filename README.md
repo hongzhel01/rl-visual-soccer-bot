@@ -56,12 +56,6 @@ rl-visual-soccer-bot/
 │       └── evaluate.py                          # 性能评估脚本 ✅
 ├── train.py                                     # 训练脚本
 ├── play.py                                      # 推理脚本
-├── doc/                                         # 完整文档目录
-│   ├── 最终总结-请先阅读.txt                    # 👈 入口文档
-│   ├── 快速开始.md                              # 三步实施指南
-│   ├── 项目优化方案.md                          # 核心技术文档（41KB）
-│   ├── cherry-pick指南.md                       # 详细代码修改手册（38KB）
-│   └── 完整修改清单.md                          # 修改清单
 └── README.md                                    # 本文件
 ```
 
