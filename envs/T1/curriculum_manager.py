@@ -96,39 +96,54 @@ class CurriculumManager:
         if not self.enabled:
             return False
 
+        # 确保env_id是整数索引
+        if isinstance(env_id, torch.Tensor):
+            env_id = env_id.item()
+
         if self.stage == 1:  # 视觉寻球
-            return ball_visible[env_id] > 0.5 and ball_center_offset[env_id] < 0.2
+            visible_check = ball_visible[env_id] > 0.5 if ball_visible.dim() > 0 else ball_visible > 0.5
+            offset_check = ball_center_offset[env_id] < 0.2 if ball_center_offset.dim() > 0 else ball_center_offset < 0.2
+            return visible_check and offset_check
 
         elif self.stage == 2:  # 稳定接近
             ball_dist = torch.norm(ball_pos[env_id] - base_pos[env_id])
             orientation_error = projected_gravity[env_id, :2].square().sum()
-            return ball_dist < 0.25 and orientation_error < 0.01
+            return (ball_dist < 0.25).item() and (orientation_error < 0.01).item()
 
         elif self.stage == 3:  # 精准射门
             ball_speed = torch.norm(ball_lin_vel[env_id])
-            return ball_speed > 1.0
+            return (ball_speed > 1.0).item()
 
         elif self.stage == 4:  # 快速恢复
             ball_is_moving = torch.norm(ball_lin_vel[env_id]) > 0.5
             orientation_error = projected_gravity[env_id, :2].square().sum()
             height_ok = base_pos[env_id, 2] > 0.6
-            return ball_is_moving and orientation_error < 0.02 and height_ok
+            return (ball_is_moving and orientation_error < 0.02 and height_ok).item()
 
         return False
 
-    def update_stage(self, env_ids):
+    def update_stage(self, env_ids, success_flags=None):
         """
-        更新阶段进度（在episode结束时调用）
+        更新阶段进度
 
         Args:
-            env_ids: 需要更新的环境ID列表
+            env_ids: 需要更新的环境ID列表 (reset的环境)
+            success_flags: [可选] 对应环境是否成功的标志
         """
         if not self.enabled:
             return
 
-        for env_id in env_ids:
-            # 重置成功计数
-            self.stage_success_count[env_id] = 0
+        # 将单个ID转换为列表
+        if isinstance(env_ids, int) or (isinstance(env_ids, torch.Tensor) and env_ids.dim() == 0):
+            env_ids = [env_ids]
+
+        for i, env_id in enumerate(env_ids):
+            if isinstance(env_id, torch.Tensor):
+                env_id = env_id.item()
+
+            # 如果提供了成功标志且该环境失败,则重置计数
+            if success_flags is not None and not success_flags[i]:
+                self.stage_success_count[env_id] = 0
 
     def increment_success(self, env_id):
         """增加成功计数"""
