@@ -50,16 +50,32 @@ class VisualFeatureExtractor:
 
     def _preprocess(self, img):
         # 如果是 (H, W, C) 格式，转为 (C, H, W) 并增加 batch 维度
-        if img.dim() == 3:
+        if img.dim() == 3 and img.shape[-1] in [3, 4]:  # 确认最后一维是通道
             img = img.permute(2, 0, 1).unsqueeze(0).float()
-        
+        elif img.dim() == 3:  # 已经是 (C, H, W) 格式
+            img = img.unsqueeze(0).float()
+
+        # 确保是浮点型
+        if img.dtype != torch.float32:
+            img = img.float()
+
         # 1. 转换为灰度图：使用加权平均公式
-        # (Batch, 3, H, W) -> (Batch, 1, H, W)
-        gray_img = 0.2989 * img[:, 0:1] + 0.5870 * img[:, 1:2] + 0.1140 * img[:, 2:3]
-        
-        # 2. 缩放到论文要求的 160x120 
+        # 如果已经是单通道,跳过转换
+        if img.shape[1] == 1:
+            gray_img = img
+        elif img.shape[1] >= 3:
+            # (Batch, 3, H, W) -> (Batch, 1, H, W)
+            gray_img = 0.2989 * img[:, 0:1] + 0.5870 * img[:, 1:2] + 0.1140 * img[:, 2:3]
+        else:
+            raise ValueError(f"不支持的通道数: {img.shape[1]}")
+
+        # 2. 缩放到论文要求的 160x120
         # 注意：论文中宽度是160，高度是120
         resized_img = F.interpolate(gray_img, size=(120, 160), mode='bilinear', align_corners=False)
-        
+
         # 3. 归一化到 [0, 1]
-        return resized_img / 255.0
+        # 如果数据已经在[0,1]范围内,不再除以255
+        if resized_img.max() > 1.0:
+            resized_img = resized_img / 255.0
+
+        return resized_img
