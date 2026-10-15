@@ -55,7 +55,8 @@ class InformationBottleneckLayer(nn.Module):
         z = mu + eps * std
 
         # KL散度损失: KL(q(z|x) || p(z))，其中 p(z) = N(0, I)
-        kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=-1)
+        # KL = 0.5 * sum(sigma^2 + mu^2 - 1 - log(sigma^2))
+        kl_loss = 0.5 * torch.sum(logvar.exp() + mu.pow(2) - 1 - logvar, dim=-1)
         kl_loss = kl_loss.mean() * self.beta
 
         return z, kl_loss
