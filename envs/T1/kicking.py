@@ -774,13 +774,15 @@ class Kicking(BaseTask):
 
         # === 修改这里 ===
         # 计算实际每个环境的 actor 数量
-        total_actors = root_states.shape[0]  # 应该是 3（机器人+球+草皮）
-        actors_per_env = total_actors // self.num_envs  # 应该是 3
-        
-        # print(f"调试信息: total_actors={total_actors}, num_envs={self.num_envs}, actors_per_env={actors_per_env}")
-        
+        # 每个环境包含：机器人 + 球 + 草皮(可选) + 球门(左右各3个刚体)
+        total_actors = root_states.shape[0]
+        # 保存为成员变量，reset 时按此步长计算全局 actor 索引（不能写死 2 或 3）
+        self.actors_per_env = total_actors // self.num_envs
+
+        # print(f"调试信息: total_actors={total_actors}, num_envs={self.num_envs}, actors_per_env={self.actors_per_env}")
+
         # Reshape root states to separate all actors
-        self.root_states = root_states.view(self.num_envs, actors_per_env, 13)
+        self.root_states = root_states.view(self.num_envs, self.actors_per_env, 13)
         
         # 定义各个 actor 的索引
         self.robot_actor_index = 0  # 机器人
@@ -806,10 +808,10 @@ class Kicking(BaseTask):
         self.ball_rot = self.root_states[:, self.ball_actor_index, 3:7]  # Ball quaternion
         
         # 修改 ball_lin_vel 和 ball_ang_vel 的获取方式
-        # 需要找到球在 body_states 中的索引
-        # 假设球是倒数第二个 body（草皮可能是最后一个）
-        self.ball_body_index = -2  # 调整这个索引
-        
+        # 球在 body_states 中的索引：球是第 2 个 actor，紧跟在机器人所有刚体之后，
+        # 所以索引就是机器人的刚体数量。不能用 -1/-2 倒数，因为末尾是草皮和球门的刚体。
+        self.ball_body_index = self.num_bodies
+
         self.ball_lin_vel = self.body_states[:, self.ball_body_index, 7:10]  # Ball linear velocity
         self.ball_ang_vel = self.body_states[:, self.ball_body_index, 10:13]  # Ball angular velocity
         
@@ -885,6 +887,13 @@ class Kicking(BaseTask):
                     found = True
             if not found:
                 self.default_dof_pos[:, i] = self.cfg["init_state"]["default_joint_angles"]["default"]
+
+        # 按名字查找膝关节索引，供摆动相抬腿奖励使用（写死下标容易指到髋关节）
+        self.knee_dof_indices = torch.tensor(
+            [i for i in range(self.num_dofs) if "Knee" in self.dof_names[i]],
+            dtype=torch.long,
+            device=self.device,
+        )
 
         self.last_ball_lin_vel_world = torch.zeros_like(self.body_states[:, self.ball_body_index, 7:10]) # World frame
 
@@ -1049,9 +1058,9 @@ class Kicking(BaseTask):
     def _reset_dofs(self, env_ids):
         self.dof_pos[env_ids] = apply_randomization(self.default_dof_pos, self.cfg["randomization"].get("init_dof_pos"))
         self.dof_vel[env_ids] = 0.0
-        # Multiply by 2 because there are 2 actors per environment (robot and ball)
-        # This ensures we only update the robot actor's DOFs
-        env_ids_int32 = (2 * env_ids).to(dtype=torch.int32)
+        # 机器人在全局 actor 列表中的索引 = 环境号 * 每个环境的 actor 数 + 机器人偏移
+        # 这样才能只更新机器人的 DOF（之前写死乘 2，环境数大于 1 时会索引错对象）
+        env_ids_int32 = (self.actors_per_env * env_ids + self.robot_actor_index).to(dtype=torch.int32)
         self.gym.set_dof_state_tensor_indexed(
             self.sim, gymtorch.unwrap_tensor(self.dof_state), gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32)
         )
@@ -1080,9 +1089,9 @@ class Kicking(BaseTask):
 
         # Update the simulation with new state tensor for both robot and ball
         # The self.root_states tensor has been updated for both.
-        # 更新 actor indices
-        robot_actor_indices = (3 * env_ids + self.robot_actor_index).to(dtype=torch.int32)
-        ball_actor_indices = (3 * env_ids + self.ball_actor_index).to(dtype=torch.int32)
+        # 更新 actor indices（步长取实际的每环境 actor 数，不能写死 3）
+        robot_actor_indices = (self.actors_per_env * env_ids + self.robot_actor_index).to(dtype=torch.int32)
+        ball_actor_indices = (self.actors_per_env * env_ids + self.ball_actor_index).to(dtype=torch.int32)
         
         actor_indices_to_update = torch.stack((robot_actor_indices, ball_actor_indices), dim=-1).view(-1).to(dtype=torch.int32)
         num_indices = actor_indices_to_update.shape[0]
@@ -1104,18 +1113,17 @@ class Kicking(BaseTask):
         
 
 
-        # Define forward vector in robot's local frame and repeat for each env
-        forward_vec_local = torch.tensor([1.0, 1.0, 0.0], device=self.device).unsqueeze(0).repeat(len(env_ids_to_reset_ball), 1)
-        
-        # Rotate forward vector to world frame
-        forward_vec_world = quat_rotate(robot_quat, forward_vec_local)
-
-        ball_init_pos = torch.zeros_like(forward_vec_world)
+        # 球相对机器人的局部偏移量 (x 向前, y 向左)
+        ball_init_pos = torch.zeros(len(env_ids_to_reset_ball), 3, device=self.device)
         ball_init_pos[:, 0] = apply_randomization(ball_init_pos[:, 0], self.cfg["randomization"].get("ball_init_pos_x"))
         ball_init_pos[:, 1] = apply_randomization(ball_init_pos[:, 1], self.cfg["randomization"].get("ball_init_pos_y"))
 
+        # 把局部偏移整体旋转到世界坐标系
+        # 原来的写法是先旋转 [1,1,0] 再逐元素相乘，那不是旋转，机器人有偏航时位置会偏
+        offset_world = quat_rotate(robot_quat, ball_init_pos)
+
         # Calculate ball's target XY position
-        ball_target_xy = robot_pos[:, 0:2] + forward_vec_world[:, 0:2] * ball_init_pos[:, 0:2]
+        ball_target_xy = robot_pos[:, 0:2] + offset_world[:, 0:2]
         
         # Calculate ball's target Z position (on the ground + ball radius)
         if hasattr(self, 'terrain'):
@@ -1139,7 +1147,7 @@ class Kicking(BaseTask):
         self.root_states[env_ids_to_reset_ball, 1, 7:13] = 0.0
 
         # Update only the ball actors in the simulation
-        ball_actor_indices = (3 * env_ids_to_reset_ball + self.ball_actor_index).to(dtype=torch.int32)
+        ball_actor_indices = (self.actors_per_env * env_ids_to_reset_ball + self.ball_actor_index).to(dtype=torch.int32)
         if len(ball_actor_indices) > 0:
             self.gym.set_actor_root_state_tensor_indexed(
                 self.sim,
@@ -1267,18 +1275,15 @@ class Kicking(BaseTask):
         self.render()
 
         self.gym.step_graphics(self.sim)
-        # ===== 在这里添加摄像头处理 =====
-        self._process_camera_images()
 
-
-        # 1. 检查是否到了处理图像的步数
+        # ===== 摄像头处理 =====
+        # 注意：_process_camera_images 内部已经调用了 render_all_camera_sensors，
+        # 所以这里只在需要提取特征的步数做一次，避免同一步重复渲染、重复写视频帧
         if self.common_step_counter % self.visual_process_interval == 0:
-            # 仅在需要提取特征时才渲染，节省显存开销 [cite: 251]
-            self.gym.render_all_camera_sensors(self.sim)
             self._process_camera_images()
-            
+
             if self.camera_images is not None:
-                # 这里的提取过程耗时约 0.0023 秒 
+                # 这里的提取过程耗时约 0.0023 秒
                 self._extract_visual_features()
 
 
@@ -1295,8 +1300,8 @@ class Kicking(BaseTask):
         self.gym.refresh_rigid_body_state_tensor(self.sim)
         
         self.ball_pos[:] = self.root_states[:, 1, 0:3]
-        self.ball_lin_vel[:] = self.body_states[:, -1, 7:10]
-        self.ball_ang_vel[:] = self.body_states[:, -1, 10:13]
+        self.ball_lin_vel[:] = self.body_states[:, self.ball_body_index, 7:10]
+        self.ball_ang_vel[:] = self.body_states[:, self.ball_body_index, 10:13]
 
         self.base_pos[:] = self.root_states[:, 0, 0:3]
         self.base_quat[:] = self.root_states[:, 0, 3:7]
@@ -1372,7 +1377,7 @@ class Kicking(BaseTask):
         # For envs that were not reset (neither full nor ball-only), this is their current velocity.
         # For envs that *were* reset (either full or ball-only), their velocity was set to 0.0 during reset,
         # so this correctly reflects their "last" velocity as 0 before the next step.
-        self.last_ball_lin_vel_world[:] = self.body_states[:, -1, 7:10]
+        self.last_ball_lin_vel_world[:] = self.body_states[:, self.ball_body_index, 7:10]
 
         env_ids = self.reset_buf.nonzero(as_tuple=False).flatten()
         if len(env_ids) > 0:
@@ -1845,20 +1850,20 @@ class Kicking(BaseTask):
 
         # --- [优化修改点]: Leaky Top-K 掩码 ---
         k = self.cfg.get("visual", {}).get("top_k", 8)
-        
+        # 初始值设为 0.1（而不是 0.0），这样非关键特征依然能提供微弱的上下文信息，
+        # 保持梯度连续。放在 if 外面定义，避免 k >= 特征维度时下面打印日志报 NameError
+        leak_factor = 0.1
+
         if k < visual_obs.shape[-1]:
             # 1. 找到 Top-K
             _, indices = torch.topk(visual_obs.abs(), k, dim=-1) # 建议用绝对值 abs() 找能量最大的
-            
+
             # 2. 创建"漏水"掩码 (Leaky Mask)
-            # 初始值设为 0.1 (或其他小数值)，而不是 0.0
-            # 这样非关键特征依然能提供微弱的上下文信息，保持梯度连续
-            leak_factor = 0.1 
-            mask = torch.ones_like(visual_obs) * leak_factor 
-            
+            mask = torch.ones_like(visual_obs) * leak_factor
+
             # 3. 将 Top-K 的位置设为 1.0
             mask.scatter_(-1, indices, 1.0)
-            
+
             # 4. 应用掩码
             visual_obs = visual_obs * mask
         # ----------------------------------------
@@ -2059,8 +2064,8 @@ class Kicking(BaseTask):
         target_position = to_torch([5.0, 0.0, 0.05], device=self.device).unsqueeze(0)
         
         # Get current ball position and velocity (in world frame)
-        ball_pos_world = self.body_states[:, -1, 0:3]
-        ball_vel_world = self.body_states[:, -1, 7:10]
+        ball_pos_world = self.body_states[:, self.ball_body_index, 0:3]
+        ball_vel_world = self.body_states[:, self.ball_body_index, 7:10]
         
         # Calculate the direction vector from ball to target
         ball_to_target = target_position - ball_pos_world
@@ -2097,7 +2102,7 @@ class Kicking(BaseTask):
         # cfg["rewards"]["foot_velocity_towards_ball_scale"] - Scale for velocity reward
         # cfg["rewards"]["foot_velocity_weight"] - Weight for velocity vs proximity reward (0-1)
 
-        current_ball_pos_world = self.body_states[:, -1, 0:3]
+        current_ball_pos_world = self.body_states[:, self.ball_body_index, 0:3]
 
         foot_ball_dist_left = torch.norm(self.feet_pos[:, 0, :] - current_ball_pos_world, dim=-1)
         foot_ball_dist_right = torch.norm(self.feet_pos[:, 1, :] - current_ball_pos_world, dim=-1)
@@ -2167,7 +2172,7 @@ class Kicking(BaseTask):
     def _reward_ball_acceleration(self):
         """Rewards ball acceleration towards the target direction, encouraging effective kicks."""
         # Get current and previous ball velocities in world frame
-        current_ball_vel_world = self.body_states[:, -1, 7:9]
+        current_ball_vel_world = self.body_states[:, self.ball_body_index, 7:9]
         prev_ball_vel_world = self.last_ball_lin_vel_world[:,:2]
         
         # Calculate ball acceleration (change in velocity / time)
@@ -2241,7 +2246,8 @@ class Kicking(BaseTask):
         当相位在摆动相（0.5-1.0）且接近球时给予奖励
         """
         phase = self.gait_phase_controller.phase
-        dist_to_ball = torch.norm(self.ball_pos - self.base_pos[:, :2], dim=1)
+        # 只比较水平面距离：两边都取前两维，否则 [N,3]-[N,2] 无法广播会直接报错
+        dist_to_ball = torch.norm(self.ball_pos[:, :2] - self.base_pos[:, :2], dim=1)
 
         # 在摆动相（0.5-1.0）且接近球（<0.3m）时给奖励
         in_swing_phase = (phase > 0.5).float()
@@ -2283,14 +2289,11 @@ class Kicking(BaseTask):
         """
         phase = self.gait_phase_controller.phase
 
-        # 假设左腿关节索引为 0-5，右腿为 6-11
-        # 检查膝关节角度（假设索引2和8是膝关节）
-        left_knee = self.dof_pos[:, 2]
-        right_knee = self.dof_pos[:, 8]
+        # 膝关节下标在 _init_buffers 里按名字查好（T1 的膝关节是 3 和 9，不是 2 和 8）
+        knee_bend = torch.abs(self.dof_pos[:, self.knee_dof_indices]).sum(dim=-1)
 
         # 在摆动相时奖励膝关节弯曲（抬腿）
         in_swing_phase = (phase > 0.5).float()
-        knee_bend = torch.abs(left_knee) + torch.abs(right_knee)
 
         reward = in_swing_phase * knee_bend * 0.1
         return reward
@@ -2302,19 +2305,16 @@ class Kicking(BaseTask):
         """
         phase = self.gait_phase_controller.phase
 
-        # 假设有 contact_forces 或类似的传感器数据
-        # 这里简化处理，使用足部高度近似
-        # 需要根据实际机器人配置调整
-        foot_height_threshold = 0.05
-
-        # 假设足部位置可以从 dof_pos 计算或从传感器获取
-        # 这里用一个简化版本
         in_stance = (phase < 0.5).float()
         in_swing = (phase >= 0.5).float()
 
-        # 理想情况：支撑相接触，摆动相不接触
-        # 这里返回一个基础奖励，实际需要接触传感器数据
-        reward = torch.ones(self.num_envs, device=self.device) * 0.5
+        # 直接用 _refresh_feet_state 算好的触地标志，而不是返回一个常数
+        num_contacts = self.feet_contact.float().sum(dim=-1)
+        both_contact = (num_contacts >= 2).float()   # 双脚触地
+        any_contact = (num_contacts >= 1).float()    # 至少一只脚触地
+
+        # 支撑相：双脚触地得分；摆动相：只有一只脚触地（另一只抬起）得分
+        reward = in_stance * both_contact + in_swing * any_contact * (1.0 - both_contact)
 
         return reward
 
@@ -2324,7 +2324,8 @@ class Kicking(BaseTask):
         这是最佳的踢球时机
         """
         phase = self.gait_phase_controller.phase
-        dist_to_ball = torch.norm(self.ball_pos - self.base_pos[:, :2], dim=1)
+        # 同样只比较水平面距离，避免 [N,3]-[N,2] 的广播错误
+        dist_to_ball = torch.norm(self.ball_pos[:, :2] - self.base_pos[:, :2], dim=1)
         ball_vel = torch.norm(self.ball_lin_vel, dim=1)
 
         # 最佳踢球相位：0.85-1.0
